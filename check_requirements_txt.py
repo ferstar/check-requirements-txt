@@ -88,7 +88,7 @@ def parse_ignore(value: str) -> Set[str]:
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument('filenames', nargs='*')
-    parser.add_argument('--ignore', type=parse_ignore, default={'pip,'})
+    parser.add_argument('--ignore', type=parse_ignore, default='pip')
     args = parser.parse_args(argv)
 
     modules = stdlib_list(f'{sys.version_info.major}.{sys.version_info.minor}')

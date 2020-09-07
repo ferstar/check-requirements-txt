@@ -1,0 +1,6 @@
+-   id: check-requirements-txt
+    name: check-requirements-txt
+    description: Check the missing packages in requirements.txt.
+    entry: check-requirements-txt
+    language: python
+    types: [python]

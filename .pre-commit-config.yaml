@@ -1,0 +1,44 @@
+repos:
+-   repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v2.5.0
+    hooks:
+    -   id: trailing-whitespace
+    -   id: end-of-file-fixer
+    -   id: check-docstring-first
+    -   id: check-yaml
+    -   id: debug-statements
+    -   id: double-quote-string-fixer
+    -   id: name-tests-test
+    -   id: requirements-txt-fixer
+-   repo: https://gitlab.com/pycqa/flake8
+    rev: 3.8.0
+    hooks:
+    -   id: flake8
+        additional_dependencies: [flake8-typing-imports==1.1.0]
+-   repo: https://github.com/pre-commit/mirrors-autopep8
+    rev: v1.5.2
+    hooks:
+    -   id: autopep8
+-   repo: https://github.com/asottile/reorder_python_imports
+    rev: v2.3.0
+    hooks:
+    -   id: reorder-python-imports
+        args: [--py3-plus]
+-   repo: https://github.com/ferstar/check-requirements-txt
+    rev: v1.0.0
+    hooks:
+    -   id: add-trailing-comma
+        args: [--py36-plus]
+-   repo: https://github.com/asottile/pyupgrade
+    rev: v2.4.1
+    hooks:
+    -   id: pyupgrade
+        args: [--py36-plus]
+-   repo: https://github.com/asottile/setup-cfg-fmt
+    rev: v1.9.0
+    hooks:
+    -   id: setup-cfg-fmt
+-   repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v0.770
+    hooks:
+    -   id: mypy

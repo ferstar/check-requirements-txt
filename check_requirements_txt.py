@@ -101,8 +101,8 @@ def parse_ignore(value: str) -> Set[str]:
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument('filenames', nargs='*')
-    parser.add_argument('--ignore', type=parse_ignore, default='pip')
-    parser.add_argument('--dst_dir', default='')
+    parser.add_argument('--ignore', type=parse_ignore, default='pip', help='ignore some modules')
+    parser.add_argument('--dst_dir', default='', help='destination directory you want to check(absolute path needed)')
     args = parser.parse_args(argv)
 
     modules: Dict[str, Set[str]] = defaultdict(set)

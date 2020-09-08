@@ -4,15 +4,20 @@ import re
 import sys
 from collections import defaultdict
 from pathlib import Path
-from typing import Optional, Dict, List, Iterable
+from typing import Dict
+from typing import Generator
+from typing import Iterable
+from typing import List
+from typing import Optional
 from typing import Sequence
 from typing import Set
+from typing import Union
 
 from pip._vendor import pkg_resources
 from stdlib_list import stdlib_list
 
-module_import_p = re.compile(r'^\s*?import\s+(?P<module>[a-zA-Z0-9_]+)')
-module_from_p = re.compile(r'^\s*?from\s+(?P<module>[a-zA-Z0-9_]+).*?\simport')
+MODULE_IMPORT_P = re.compile(r'^\s*?import\s+(?P<module>[a-zA-Z0-9_]+)')
+MODULE_FROM_P = re.compile(r'^\s*?from\s+(?P<module>[a-zA-Z0-9_]+).*?\simport')
 project_dir = Path().cwd()
 sub_dirs = [d for d in os.listdir(project_dir) if not d.startswith('.')]
 
@@ -32,15 +37,15 @@ def find_real_modules(package_name: str) -> List[str]:
     top_level_file = Path(metadata_dir) / 'top_level.txt'
     if top_level_file.exists() and top_level_file.is_file():
         real_modules = []
-        with open(top_level_file, 'r') as file_obj:
+        with open(top_level_file) as file_obj:
             for line in file_obj:
                 real_modules.append(line.strip().lower())
         return real_modules
     return [package_name]
 
 
-def parse_requirements(path: str) -> Iterable[str]:
-    with open(path, 'r') as req_file:
+def parse_requirements(path: Path) -> Iterable[str]:
+    with open(path) as req_file:
         for line in req_file:
             if line.startswith('-'):
                 continue
@@ -50,60 +55,84 @@ def parse_requirements(path: str) -> Iterable[str]:
                     yield ext.lower()
 
 
-def load_req_modules(req_path: str) -> List[str]:
-    modules = []
+def load_req_modules(req_path: Path) -> Dict[str, Set[str]]:
+    modules = defaultdict(set)
     for package in parse_requirements(req_path):
         for module in find_real_modules(package):
-            modules.append(module)
+            modules[module].add(package)
         for pack in find_depends(package):
-            modules.extend(find_real_modules(pack))
+            for mod in find_real_modules(pack):
+                modules[mod].add(package)
     return modules
 
 
-def builtin_packages(path: str) -> Dict[str, set]:
-    packages = defaultdict(set)
-    with open(path, 'r') as req_file:
+def builtin_packages(path: str) -> Dict[str, Set[str]]:
+    packages: Dict[str, Set[str]] = defaultdict(set)
+    with open(path) as req_file:
         for line in req_file:
             packages[line.strip()] = set()
     return packages
 
 
-def get_all_imports(path: str) -> Dict[str, set]:
-    modules = defaultdict(set)
-    with open(path, 'r') as file_obj:
-        for idx, line in enumerate(file_obj, 1):
-            match = module_import_p.search(line) or module_from_p.search(line)
-            if not match:
-                continue
-            module = match.group('module').lower()
-            if module not in sub_dirs:
-                modules[module].add(f'{path}:{idx}')
+def get_imports(paths: Union[Generator[Path, None, None], List[str]]) -> Dict[str, Set[str]]:
+    modules: Dict[str, Set[str]] = defaultdict(set)
+    for path in [Path(p) if isinstance(p, str) else p for p in paths]:
+        if path.name.startswith('.'):
+            continue
+        if path.is_file():
+            with open(path) as file_obj:
+                for idx, line in enumerate(file_obj, 1):
+                    match = MODULE_IMPORT_P.search(line) or MODULE_FROM_P.search(line)
+                    if not match:
+                        continue
+                    module = match.group('module').lower()
+                    if module not in sub_dirs:
+                        modules[module].add(f'{path}:{idx}')
+        elif path.is_dir():
+            for module, files in get_imports(path.glob('**/*.py')).items():
+                modules[module].update(files)
     return modules
 
 
 def parse_ignore(value: str) -> Set[str]:
-    return set(v.strip() for v in value.split(',') if v)
+    return {v.strip() for v in value.split(',') if v}.union({'pip'})
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument('filenames', nargs='*')
     parser.add_argument('--ignore', type=parse_ignore, default='pip')
+    parser.add_argument('--dst_dir', default='')
     args = parser.parse_args(argv)
 
-    modules = stdlib_list(f'{sys.version_info.major}.{sys.version_info.minor}')
+    modules: Dict[str, Set[str]] = defaultdict(set)
+    modules.update(
+        {
+            i: set()
+            for i in stdlib_list(f'{sys.version_info.major}.{sys.version_info.minor}')
+        },
+    )
     for path in project_dir.glob('**/*requirements*.txt'):
-        modules.extend(load_req_modules(path))
+        for module, value in load_req_modules(path).items():
+            modules[module].update(value)
+
+    file_list = args.filenames
+    if args.dst_dir and Path(args.dst_dir).is_dir():
+        file_list = [args.dst_dir]
 
     error_count = 0
-    for filename in args.filenames:
-        for module, paths in get_all_imports(filename).items():
-            if module not in modules and module not in args.ignore:
-                print(f'Bad import detected: "{module}", check your requirements.txt please.')
-                for path in paths:
-                    print(path)
-                error_count += 1
-
+    for module, paths in get_imports(file_list).items():
+        if module in args.ignore:
+            continue
+        if module not in modules:
+            print(
+                f'Bad import detected: "{module}", check your requirements.txt please.',
+            )
+            for _path in paths:
+                print(_path)
+            error_count += 1
+        elif len(modules[module]) > 1:
+            print(f'"{module}" required by: {modules[module]}')
     return error_count
 
 

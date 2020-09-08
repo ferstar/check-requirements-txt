@@ -24,8 +24,8 @@ repos:
     hooks:
     -   id: reorder-python-imports
         args: [--py3-plus]
--   repo: https://github.com/ferstar/check-requirements-txt
-    rev: v1.0.0
+-   repo: https://github.com/asottile/add-trailing-comma
+    rev: v2.0.1
     hooks:
     -   id: add-trailing-comma
         args: [--py36-plus]

@@ -19,7 +19,11 @@ from stdlib_list import stdlib_list
 MODULE_IMPORT_P = re.compile(r'^\s*?import\s+(?P<module>[a-zA-Z0-9_]+)')
 MODULE_FROM_P = re.compile(r'^\s*?from\s+(?P<module>[a-zA-Z0-9_]+).*?\simport')
 project_dir = Path().cwd()
-sub_dirs = [d for d in os.listdir(project_dir) if not d.startswith('.')]
+project_modules = [
+    os.path.splitext(d)[0] for d in os.listdir(
+        project_dir,
+    ) if not d.startswith('.') and (os.path.isdir(d) or d.endswith('.py'))
+]
 
 
 def find_depends(package_name: str) -> List[str]:
@@ -86,7 +90,7 @@ def get_imports(paths: Union[Generator[Path, None, None], List[str]]) -> Dict[st
                     if not match:
                         continue
                     module = match.group('module').lower()
-                    if module not in sub_dirs:
+                    if module not in project_modules:
                         modules[module].add(f'{path}:{idx}')
         elif path.is_dir():
             for module, files in get_imports(path.glob('**/*.py')).items():

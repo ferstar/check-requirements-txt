@@ -1,12 +1,12 @@
 check-requirements-txt
 ==================
 
-A tool (and pre-commit hook) to automatically check the missing packages in requirements.txt.
+A tool (and also a pre-commit hook) to automatically check the missing packages in requirements.txt.
 
 ## Install
 First install this package into current python env
 
-`python setup.py install`
+`pip install check-requirements-txt`
 
 Then set up `pre-commit` hooks
 
@@ -32,3 +32,13 @@ repos:
 ```
 
 `check-requirements-txt` can be used as a normal cli tool, see `check-requirements-txt --help` for more details.
+
+## Output sample
+
+```shell
+Bad import detected: "bs4"
+/Users/ferstar/PycharmProjects/xxx_demo/xxx_spider.py:12
+Bad import detected: "requests"
+/Users/ferstar/PycharmProjects/xxx_demo/xxx_handler.py:17
+"numpy" required by: {'numpy', 'scikit-learn', 'tensorflow', 'pandas'}
+```

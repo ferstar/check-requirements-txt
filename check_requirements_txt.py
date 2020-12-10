@@ -18,6 +18,7 @@ from stdlib_list import stdlib_list
 
 MODULE_IMPORT_P = re.compile(r'^\s*?import\s+(?P<module>[a-zA-Z0-9_]+)')
 MODULE_FROM_P = re.compile(r'^\s*?from\s+(?P<module>[a-zA-Z0-9_]+).*?\simport')
+DROP_LINE_P = re.compile(r'^\w+:/+', re.I)
 project_dir = Path().cwd()
 project_modules = [
     os.path.splitext(d)[0] for d in os.listdir(
@@ -52,6 +53,8 @@ def parse_requirements(path: Path) -> Iterable[str]:
     with open(path) as req_file:
         for line in req_file:
             if line.startswith('-'):
+                continue
+            if DROP_LINE_P.search(line):
                 continue
             for req in pkg_resources.parse_requirements(line):
                 yield req.key

@@ -26,7 +26,7 @@ repos:
         name: check-requirements-txt
         description: Check the missing packages in requirements.txt.
         entry: check-requirements-txt
-        args: ['--ignore', 'pip,']
+        args: ['--dst_dir', '.', '--ignore', 'pip,whatever,modules,you,want,to,ignore,with,comma,separated']
         language: python
         types: [python]
 ```

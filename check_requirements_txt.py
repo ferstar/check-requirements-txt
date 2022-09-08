@@ -13,18 +13,13 @@ from typing import Sequence
 from typing import Set
 from typing import Union
 
-from pip._vendor import pkg_resources
+import pkg_resources
 from stdlib_list import stdlib_list
 
-MODULE_IMPORT_P = re.compile(r'^\s*?import\s+(?P<module>[a-zA-Z0-9_]+)')
-MODULE_FROM_P = re.compile(r'^\s*?from\s+(?P<module>[a-zA-Z0-9_]+).*?\simport')
-DROP_LINE_P = re.compile(r'^\w+:/+', re.I)
-project_dir = Path().cwd()
-project_modules = [
-    os.path.splitext(d)[0] for d in os.listdir(
-        project_dir,
-    ) if not d.startswith('.') and (os.path.isdir(d) or d.endswith('.py'))
-]
+MODULE_IMPORT_P = re.compile(r"^\s*?import\s+(?P<module>[a-zA-Z0-9_]+)")
+MODULE_FROM_P = re.compile(r"^\s*?from\s+(?P<module>[a-zA-Z0-9_]+).*?\simport")
+DROP_LINE_P = re.compile(r"^\w+:/+", re.I)
+project_modules = set()
 
 
 def find_depends(package_name: str) -> List[str]:
@@ -39,7 +34,7 @@ def find_real_modules(package_name: str) -> List[str]:
         metadata_dir = pkg_resources.get_distribution(package_name).egg_info
     except pkg_resources.DistributionNotFound:
         return [package_name]
-    top_level_file = Path(metadata_dir) / 'top_level.txt'
+    top_level_file = Path(metadata_dir) / "top_level.txt"
     if top_level_file.exists() and top_level_file.is_file():
         real_modules = []
         with open(top_level_file) as file_obj:
@@ -52,7 +47,7 @@ def find_real_modules(package_name: str) -> List[str]:
 def parse_requirements(path: Path) -> Iterable[str]:
     with open(path) as req_file:
         for line in req_file:
-            if line.startswith('-'):
+            if line.startswith("-"):
                 continue
             if DROP_LINE_P.search(line):
                 continue
@@ -73,75 +68,92 @@ def load_req_modules(req_path: Path) -> Dict[str, Set[str]]:
     return modules
 
 
-def builtin_packages(path: str) -> Dict[str, Set[str]]:
-    packages: Dict[str, Set[str]] = defaultdict(set)
-    with open(path) as req_file:
-        for line in req_file:
-            packages[line.strip()] = set()
-    return packages
-
-
-def get_imports(paths: Union[Generator[Path, None, None], List[str]]) -> Dict[str, Set[str]]:
+def get_imports(
+    paths: Union[Generator[Path, None, None], List[Path]]
+) -> Dict[str, Set[str]]:
     modules: Dict[str, Set[str]] = defaultdict(set)
-    for path in [Path(p) if isinstance(p, str) else p for p in paths]:
-        if path.name.startswith('.'):
-            continue
-        if path.is_file():
+    for path in paths:
+        if path.is_file() and path.suffix.lower() == ".py":
             with open(path) as file_obj:
                 for idx, line in enumerate(file_obj, 1):
                     match = MODULE_IMPORT_P.search(line) or MODULE_FROM_P.search(line)
                     if not match:
                         continue
-                    module = match.group('module').lower()
+                    module = match.group("module").lower()
                     if module not in project_modules:
-                        modules[module].add(f'{path}:{idx}')
+                        modules[module].add(f"{path}:{idx}")
         elif path.is_dir():
-            for module, files in get_imports(path.glob('**/*.py')).items():
+            for module, files in get_imports(path.glob("**/*.py")).items():
                 modules[module].update(files)
     return modules
 
 
 def parse_ignore(value: str) -> Set[str]:
-    return {v.strip() for v in value.split(',') if v}.union({'pip'})
+    return {v.strip() for v in value.split(",") if v}.union({"pip"})
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument('filenames', nargs='*')
-    parser.add_argument('--ignore', type=parse_ignore, default='pip', help='ignore some modules')
-    parser.add_argument('--dst_dir', default='', help='destination directory you want to check(absolute path needed)')
+    parser.add_argument("filenames", nargs="*")
+    parser.add_argument(
+        "--ignore", type=parse_ignore, default="pip", help="ignore some modules"
+    )
+    parser.add_argument(
+        "--dst_dir", default="", help="destination directory you want to check"
+    )
     args = parser.parse_args(argv)
 
-    modules: Dict[str, Set[str]] = defaultdict(set)
-    modules.update(
+    builtin_modules: Dict[str, Set[str]] = defaultdict(set)
+    builtin_modules.update(
         {
             i: set()
-            for i in stdlib_list(f'{sys.version_info.major}.{sys.version_info.minor}')
+            for i in stdlib_list(f"{sys.version_info.major}.{sys.version_info.minor}")
         },
     )
-    for path in project_dir.glob('**/*requirements*.txt'):
-        for module, value in load_req_modules(path).items():
-            modules[module].update(value)
+    path_list = [Path(p).absolute() for p in args.filenames]
+    if args.dst_dir:
+        path_list.append(Path(args.dst_dir).absolute())
 
-    file_list = args.filenames
-    if args.dst_dir and Path(args.dst_dir).is_dir():
-        file_list = [args.dst_dir]
+    project_dirs = [
+        p
+        for p in path_list
+        if p.is_dir() and not any(p.name.startswith(".") for p in p.parents)
+    ]
+    if not project_dirs:
+        project_dirs.append(Path().cwd())
+
+    project_modules.update(
+        os.path.splitext(p.as_posix().replace(project.as_posix(), "").lstrip("/"))[
+            0
+        ].replace("/", ".")
+        for project in project_dirs
+        for p in project.glob("**/*.py")
+        if not p.name.startswith(".")
+        and p.name != "__init__.py"
+        and (os.path.isdir(p) or p.name.endswith(".py"))
+    )
+    project_modules.update(m for p in project_modules.copy() for m in p.split("."))
+
+    for project in project_dirs:
+        for path in project.glob("**/*requirement*.txt"):
+            for module, value in load_req_modules(path).items():
+                builtin_modules[module].update(value)
 
     error_count = 0
-    for module, paths in get_imports(file_list).items():
+    for module, paths in get_imports(path_list).items():
         if module in args.ignore:
             continue
-        if module not in modules:
+        if module not in builtin_modules:
             print(
                 f'Bad import detected: "{module}", check your requirements.txt please.',
             )
             for _path in paths:
                 print(_path)
             error_count += 1
-        elif len(modules[module]) > 1:
-            print(f'"{module}" required by: {modules[module]}')
+        elif len(builtin_modules[module]) > 1:
+            print(f'"{module}" required by: {builtin_modules[module]}')
     return error_count
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     exit(main())

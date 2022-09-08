@@ -1,3 +1,2 @@
-covdefaults
-coverage
+stdlib_list
 pytest

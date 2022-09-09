@@ -14,7 +14,11 @@ See [pre-commit](https://github.com/pre-commit/pre-commit) for instructions
 
 Sample `.pre-commit-config.yaml`:
 
-> NOTE: Due to the pre-commit isolated pyenv runtime, this package can't be act as a normal git repo pre-commit hooks
+> NOTE: 
+> 
+> Due to the pre-commit isolated pyenv runtime, this package can't be act as a normal git repo pre-commit hooks.
+> 
+> If the project's requirements.txt does not match pattern `*requirement*.txt`, you'll need to specify it.
 
 ```yaml
 default_stages: [commit]
@@ -41,4 +45,7 @@ Bad import detected: "bs4"
 Bad import detected: "requests"
 /Users/ferstar/PycharmProjects/xxx_demo/xxx_handler.py:17
 "numpy" required by: {'numpy', 'scikit-learn', 'tensorflow', 'pandas'}
+# NOTE: the output of cli is the total bad import count
+~ echo $?
+~ 2
 ```

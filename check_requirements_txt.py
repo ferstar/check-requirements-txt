@@ -47,9 +47,13 @@ def find_real_modules(package_name: str) -> List[str]:
 def parse_requirements(path: Path) -> Iterable[str]:
     with open(path) as req_file:
         for line in req_file:
-            if line.startswith("-"):
-                continue
-            if DROP_LINE_P.search(line):
+            if line.startswith("-r"):
+                # nested requirements path: "-r another-path.txt"
+                nested_path = Path(line.replace("-r", "", 1).split("#", 1)[0].strip())
+                if not nested_path.exists():
+                    nested_path = path.parent / nested_path.name
+                yield from parse_requirements(nested_path)
+            if line.startswith("-") or DROP_LINE_P.search(line):
                 continue
             for req in pkg_resources.parse_requirements(line):
                 yield req.key
@@ -57,8 +61,10 @@ def parse_requirements(path: Path) -> Iterable[str]:
                     yield ext.lower()
 
 
-def load_req_modules(req_path: Path) -> Dict[str, Set[str]]:
+def load_req_modules(req_path: Union[Path, str]) -> Dict[str, Set[str]]:
     modules = defaultdict(set)
+    if isinstance(req_path, str):
+        req_path = Path(req_path)
     for package in parse_requirements(req_path):
         for module in find_real_modules(package):
             modules[module].add(package)
@@ -88,20 +94,35 @@ def get_imports(
     return modules
 
 
-def parse_ignore(value: str) -> Set[str]:
-    return {v.strip() for v in value.split(",") if v}.union({"pip"})
+def param_as_set(value: str) -> Set[str]:
+    return {v.strip() for v in value.split(",") if v}
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("filenames", nargs="*")
     parser.add_argument(
-        "--ignore", type=parse_ignore, default="pip", help="ignore some modules"
+        "-i",
+        "--ignore",
+        type=param_as_set,
+        default="pip",
+        help="ignore,modules,with,comma,separated",
     )
     parser.add_argument(
-        "--dst_dir", default="", help="destination directory you want to check"
+        "-d", "--dst_dir", default="", help="destination directory you want to check"
+    )
+    parser.add_argument(
+        "-r",
+        "--req-txt-path",
+        dest="req_paths",
+        type=param_as_set,
+        default="",
+        help="path of your requirements file(with comma separated)",
     )
     args = parser.parse_args(argv)
+    if len(sys.argv) < 2:
+        parser.print_help()
+        sys.exit(0)
 
     builtin_modules: Dict[str, Set[str]] = defaultdict(set)
     builtin_modules.update(
@@ -110,7 +131,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             for i in stdlib_list(f"{sys.version_info.major}.{sys.version_info.minor}")
         },
     )
-    path_list = [Path(p).absolute() for p in args.filenames]
+    path_list = [
+        Path(p).absolute() for p in args.filenames if p.lower().endswith(".py")
+    ]
     if args.dst_dir:
         path_list.append(Path(args.dst_dir).absolute())
 
@@ -134,12 +157,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
     project_modules.update(m for p in project_modules.copy() for m in p.split("."))
 
-    for project in project_dirs:
-        for path in project.glob("**/*requirement*.txt"):
-            for module, value in load_req_modules(path).items():
-                builtin_modules[module].update(value)
+    if not args.req_paths:
+        for project in project_dirs:
+            for path in args.req_paths or project.glob("**/*requirement*.txt"):
+                args.req_paths.add(path)
+    assert (
+        args.req_paths
+    ), 'No files matched pattern "*requirement*.txt", you need to specify the requirement(s) path(s)'
+
+    for path in args.req_paths:
+        for module, value in load_req_modules(path).items():
+            builtin_modules[module].update(value)
 
     error_count = 0
+    args.ignore.add("pip")
     for module, paths in get_imports(path_list).items():
         if module in args.ignore:
             continue
@@ -156,4 +187,4 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
 
 if __name__ == "__main__":
-    exit(main())
+    sys.exit(main())

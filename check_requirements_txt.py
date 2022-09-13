@@ -120,7 +120,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         help="path of your requirements file(with comma separated)",
     )
     args = parser.parse_args(argv)
-    if len(sys.argv) < 2:
+    if not argv and len(sys.argv) < 2:
         parser.print_help()
         sys.exit(0)
 

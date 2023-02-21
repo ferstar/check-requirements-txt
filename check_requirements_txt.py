@@ -14,12 +14,20 @@ from typing import Set
 from typing import Union
 
 import pkg_resources
-from stdlib_list import stdlib_list
 
 MODULE_IMPORT_P = re.compile(r"^\s*?import\s+(?P<module>[a-zA-Z0-9_]+)")
 MODULE_FROM_P = re.compile(r"^\s*?from\s+(?P<module>[a-zA-Z0-9_]+).*?\simport")
 DROP_LINE_P = re.compile(r"^\w+:/+", re.I)
 project_modules = set()
+
+
+def stdlibs() -> List[str]:
+    ver = sys.version_info
+    if ver < (3, 10):
+        from stdlib_list import stdlib_list
+        return stdlib_list(f"{ver.major}.{ver.minor}")
+    else:
+        return list(set(list(sys.stdlib_module_names) + list(sys.builtin_module_names)))
 
 
 def find_depends(package_name: str) -> List[str]:
@@ -128,7 +136,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     builtin_modules.update(
         {
             i: set()
-            for i in stdlib_list(f"{sys.version_info.major}.{sys.version_info.minor}")
+            for i in stdlibs()
         },
     )
     path_list = [

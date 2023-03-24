@@ -59,7 +59,7 @@ def parse_requirements(path: Path) -> Iterable[str]:
                 # nested requirements path: "-r another-path.txt"
                 nested_path = Path(line.replace("-r", "", 1).split("#", 1)[0].strip())
                 if not nested_path.exists():
-                    nested_path = path.parent / nested_path.name
+                    nested_path = path.parent.joinpath(nested_path)
                 yield from parse_requirements(nested_path)
             if line.startswith("-") or DROP_LINE_P.search(line):
                 continue

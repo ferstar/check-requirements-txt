@@ -1,2 +1,2 @@
-stdlib_list
+stdlib_list; python_version < "3.10"
 pytest

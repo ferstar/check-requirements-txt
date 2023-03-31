@@ -179,6 +179,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     error_count = 0
     args.ignore.add("pip")
+    args.ignore = {v.lower() for v in args.ignore}
     for module, paths in get_imports(path_list).items():
         if module in args.ignore:
             continue

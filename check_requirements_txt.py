@@ -1,4 +1,5 @@
 import argparse
+import logging
 import os
 import re
 import sys
@@ -18,6 +19,8 @@ import pkg_resources
 MODULE_IMPORT_P = re.compile(r"^\s*?import\s+(?P<module>[a-zA-Z0-9_]+)")
 MODULE_FROM_P = re.compile(r"^\s*?from\s+(?P<module>[a-zA-Z0-9_]+).*?\simport")
 DROP_LINE_P = re.compile(r"^\w+:/+", re.I)
+P_QUOTE = re.compile(r'\(\s*[>=<].*?\)')
+P_EMPTY = re.compile(r'\s')
 project_modules = set()
 
 
@@ -34,6 +37,13 @@ def find_depends(package_name: str) -> List[str]:
     package = pkg_resources.working_set.by_key.get(package_name)
     if not package:
         return [package_name]
+    for i, header in enumerate(package._parsed_pkg_info._headers):
+        if header[0] == "Requires-Dist":
+            matched = P_QUOTE.search(header[1])
+            if matched and not P_EMPTY.sub('', matched.group())[-2].isdigit():
+                logging.warning("wrong format for version `%s`", header[1])
+            new_version = P_QUOTE.sub('', header[1]).rstrip()
+            package._parsed_pkg_info._headers[i] = header[0], new_version
     return [r.key for r in package.requires()]
 
 
@@ -180,7 +190,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     error_count = 0
     args.ignore.add("pip")
     args.ignore = {v.lower() for v in args.ignore}
-    for module, paths in get_imports(path_list).items():
+    used_modules = get_imports(path_list)
+    builtin_modules = {name.replace("-", "_"): items for name, items in builtin_modules.items()}
+    used_modules = {name.replace("-", "_"): items for name, items in used_modules.items()}
+    for module, paths in used_modules.items():
         if module in args.ignore:
             continue
         if module not in builtin_modules:

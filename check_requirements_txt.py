@@ -37,7 +37,12 @@ def find_depends(package_name: str) -> List[str]:
     package = pkg_resources.working_set.by_key.get(package_name)
     if not package:
         return [package_name]
-    for i, header in enumerate(package._parsed_pkg_info._headers):
+    headers = []
+    try:
+        headers.extend(package._parsed_pkg_info._headers)
+    except Exception as e:
+        logging.warning("package %s has no header, error: %s", headers, e)
+    for i, header in enumerate(headers):
         if header[0] == "Requires-Dist":
             matched = P_QUOTE.search(header[1])
             if matched and not P_EMPTY.sub('', matched.group())[-2].isdigit():

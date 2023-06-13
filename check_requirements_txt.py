@@ -52,29 +52,29 @@ def find_real_modules(package_name: str) -> List[str]:
         egg_dir = Path(pkg_resources.get_distribution(package_name).egg_info)
     except pkg_resources.DistributionNotFound:
         return [package_name]
+
+    modules = set()
     top_level_file = egg_dir / "top_level.txt"
     if top_level_file.exists() and top_level_file.is_file():
-        real_modules = []
         with open(top_level_file) as file_obj:
             for line in file_obj:
-                real_modules.append(line.strip().lower())
-        return real_modules
+                modules.add(line.strip().lower())
 
     # Some packages do not have "top_level.txt", such as "attrs".
     # We can use "RECORD" file to find the possible modules.
     record = egg_dir / "RECORD"
     if record.exists() and record.is_file():
-        real_modules = []
         with open(record) as file_obj:
             for line in file_obj:
                 path = line.split(",", 1)[0].strip()
                 if egg_dir.name in path:
                     continue
                 if '__init__.' in path:
-                    real_modules.append(os.path.dirname(path))
-        return real_modules
+                    modules.add(Path(path).parent.name.lower())
 
-    return [package_name]
+    if not modules:
+        modules.add(package_name)
+    return list(modules)
 
 
 def parse_requirements(path: Path) -> Iterable[str]:

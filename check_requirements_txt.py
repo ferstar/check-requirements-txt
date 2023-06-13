@@ -1,5 +1,5 @@
 import argparse
-import logging
+import functools
 import os
 import re
 import sys
@@ -19,8 +19,6 @@ import pkg_resources
 MODULE_IMPORT_P = re.compile(r"^\s*?import\s+(?P<module>[a-zA-Z0-9_]+)")
 MODULE_FROM_P = re.compile(r"^\s*?from\s+(?P<module>[a-zA-Z0-9_]+).*?\simport")
 DROP_LINE_P = re.compile(r"^\w+:/+", re.I)
-P_QUOTE = re.compile(r'\(\s*[>=<].*?\)')
-P_EMPTY = re.compile(r'\s')
 project_modules = set()
 
 
@@ -33,25 +31,22 @@ def stdlibs() -> List[str]:
         return list(set(list(sys.stdlib_module_names) + list(sys.builtin_module_names)))
 
 
+@functools.lru_cache()
 def find_depends(package_name: str) -> List[str]:
-    package = pkg_resources.working_set.by_key.get(package_name)
-    if not package:
-        return [package_name]
-    headers = []
+    requires = set()
     try:
-        headers.extend(package._parsed_pkg_info._headers)
-    except Exception as e:
-        logging.warning("package %s has no header, error: %s", headers, e)
-    for i, header in enumerate(headers):
-        if header[0] == "Requires-Dist":
-            matched = P_QUOTE.search(header[1])
-            if matched and not P_EMPTY.sub('', matched.group())[-2].isdigit():
-                logging.warning("wrong format for version `%s`", header[1])
-            new_version = P_QUOTE.sub('', header[1]).rstrip()
-            package._parsed_pkg_info._headers[i] = header[0], new_version
-    return [r.key for r in package.requires()]
+        dist_obj = pkg_resources.get_distribution(package_name)
+    except pkg_resources.DistributionNotFound:
+        return [package_name]
+    for req in dist_obj.requires():
+        if req.marker and not req.marker.evaluate():
+            continue
+        requires.add(req.name)
+        requires.update(find_depends(req.name))
+    return list(requires)
 
 
+@functools.lru_cache()
 def find_real_modules(package_name: str) -> List[str]:
     try:
         metadata_dir = pkg_resources.get_distribution(package_name).egg_info

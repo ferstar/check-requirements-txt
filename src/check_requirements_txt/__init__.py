@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2023-present ferstar <zhangjianfei3@gmail.com>
+#
+# SPDX-License-Identifier: MIT
 import argparse
 import functools
 import os
@@ -131,7 +134,7 @@ def param_as_set(value: str) -> Set[str]:
     return {v.strip() for v in value.split(",") if v}
 
 
-def main(argv: Optional[Sequence[str]] = None) -> int:
+def run(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("filenames", nargs="*")
     parser.add_argument(
@@ -224,4 +227,4 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(run())

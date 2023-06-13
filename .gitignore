@@ -6,3 +6,6 @@
 /.tox
 /venv*
 .idea
+.python-version
+dist
+build

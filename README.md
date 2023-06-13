@@ -1,12 +1,24 @@
-check-requirements-txt
-==================
+# check-requirements-txt
 
 A tool (and also a pre-commit hook) to automatically check the missing packages in requirements.txt.
 
-## Install
+[![PyPI - Version](https://img.shields.io/pypi/v/check-requirements-txt.svg)](https://pypi.org/project/check-requirements-txt)
+[![PyPI - Python Version](https://img.shields.io/pypi/pyversions/check-requirements-txt.svg)](https://pypi.org/project/check-requirements-txt)
+
+-----
+
+**Table of Contents**
+
+- [Installation](#Installation)
+- [License](#License)
+
+## Installation
+
 First install this package into current python env
 
-`pip install check-requirements-txt`
+```console
+pip install check-requirements-txt
+```
 
 Then set up `pre-commit` hooks
 
@@ -49,3 +61,7 @@ Bad import detected: "requests"
 ~ echo $?
 ~ 2
 ```
+
+## License
+
+`check-requirements-txt` is distributed under the terms of the [MIT](https://spdx.org/licenses/MIT.html) license.

@@ -8,14 +8,7 @@ import re
 import sys
 from collections import defaultdict
 from pathlib import Path
-from typing import Dict
-from typing import Generator
-from typing import Iterable
-from typing import List
-from typing import Optional
-from typing import Sequence
-from typing import Set
-from typing import Union
+from typing import Dict, Generator, Iterable, List, Optional, Sequence, Set, Union
 
 import pkg_resources
 
@@ -72,7 +65,7 @@ def find_real_modules(package_name: str) -> List[str]:
                 path = line.split(",", 1)[0].strip()
                 if egg_dir.name in path:
                     continue
-                if '__init__.' in path:
+                if "__init__." in path:
                     modules.add(Path(path).parent.name.lower())
 
     if not modules:
@@ -111,22 +104,26 @@ def load_req_modules(req_path: Union[Path, str]) -> Dict[str, Set[str]]:
 
 
 def get_imports(
-    paths: Union[Generator[Path, None, None], List[Path]]
+        paths: Union[Generator[Path, None, None], List[Path]]
 ) -> Dict[str, Set[str]]:
     modules: Dict[str, Set[str]] = defaultdict(set)
-    for path in paths:
-        if path.is_file() and path.suffix.lower() == ".py":
-            with open(path) as file_obj:
+
+    def process_path(p: Path):
+        if p.is_file() and p.suffix.lower() == ".py":
+            with open(p) as file_obj:
                 for idx, line in enumerate(file_obj, 1):
                     match = MODULE_IMPORT_P.search(line) or MODULE_FROM_P.search(line)
                     if not match:
                         continue
                     module = match.group("module").lower()
                     if module not in project_modules:
-                        modules[module].add(f"{path}:{idx}")
-        elif path.is_dir():
-            for module, files in get_imports(path.glob("**/*.py")).items():
-                modules[module].update(files)
+                        modules[module].add(f"{p}:{idx}")
+        elif p.is_dir() and not p.name.startswith("."):
+            for item in p.iterdir():
+                process_path(item)
+
+    for path in paths:
+        process_path(path)
     return modules
 
 
@@ -197,9 +194,9 @@ def run(argv: Optional[Sequence[str]] = None) -> int:
         for project in project_dirs:
             for path in args.req_paths or project.glob("**/*requirement*.txt"):
                 args.req_paths.add(path)
-    assert (
-        args.req_paths
-    ), 'No files matched pattern "*requirement*.txt", you need to specify the requirement(s) path(s)'
+    if not args.req_paths:
+        msg = 'No files matched pattern "*requirement*.txt", you need to specify the requirement(s) path(s)'
+        raise ValueError(msg)
 
     for path in args.req_paths:
         for module, value in load_req_modules(path).items():

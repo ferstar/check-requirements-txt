@@ -2,7 +2,6 @@
 #
 # SPDX-License-Identifier: MIT
 import argparse
-import functools
 import os
 import re
 import sys
@@ -27,46 +26,71 @@ def stdlibs() -> List[str]:
         return list(set(list(sys.stdlib_module_names) + list(sys.builtin_module_names)))
 
 
-@functools.lru_cache()
 def find_depends(package_name: str) -> List[str]:
     requires = set()
-    try:
-        dist_obj = pkg_resources.get_distribution(package_name)
-    except pkg_resources.DistributionNotFound:
-        return [package_name]
-    for req in dist_obj.requires():
-        if req.marker and not req.marker.evaluate():
+    to_process = [package_name]
+    processed = set()
+
+    while to_process:
+        current_package = to_process.pop(0)
+
+        if current_package in processed:
             continue
-        requires.add(req.name)
-        requires.update(find_depends(req.name))
+
+        processed.add(current_package)
+
+        try:
+            dist_obj = pkg_resources.get_distribution(current_package)
+        except pkg_resources.DistributionNotFound:
+            requires.add(current_package)
+            continue
+
+        requires.add(current_package)
+
+        for req in dist_obj.requires():
+            if req.marker and not req.marker.evaluate():
+                continue
+            to_process.append(req.name)
+
     return list(requires)
 
 
-@functools.lru_cache()
 def find_real_modules(package_name: str) -> List[str]:
-    try:
-        egg_dir = Path(pkg_resources.get_distribution(package_name).egg_info)
-    except pkg_resources.DistributionNotFound:
-        return [package_name]
-
     modules = set()
-    top_level_file = egg_dir / "top_level.txt"
-    if top_level_file.exists() and top_level_file.is_file():
-        with open(top_level_file) as file_obj:
-            for line in file_obj:
-                modules.add(line.strip().lower())
+    to_process = [package_name]
+    processed = set()
 
-    # Some packages do not have "top_level.txt", such as "attrs".
-    # We can use "RECORD" file to find the possible modules.
-    record = egg_dir / "RECORD"
-    if record.exists() and record.is_file():
-        with open(record) as file_obj:
-            for line in file_obj:
-                path = line.split(",", 1)[0].strip()
-                if egg_dir.name in path:
-                    continue
-                if "__init__." in path:
-                    modules.add(Path(path).parent.name.lower())
+    while to_process:
+        current_package = to_process.pop(0)
+
+        if current_package in processed:
+            continue
+
+        processed.add(current_package)
+
+        try:
+            egg_dir = Path(pkg_resources.get_distribution(current_package).egg_info)
+        except pkg_resources.DistributionNotFound:
+            modules.add(current_package)
+            continue
+
+        top_level_file = egg_dir / "top_level.txt"
+        if top_level_file.exists() and top_level_file.is_file():
+            with open(top_level_file) as file_obj:
+                for line in file_obj:
+                    modules.add(line.strip().lower())
+
+        # Some packages do not have "top_level.txt", such as "attrs".
+        # We can use "RECORD" file to find the possible modules.
+        record = egg_dir / "RECORD"
+        if record.exists() and record.is_file():
+            with open(record) as file_obj:
+                for line in file_obj:
+                    path = line.split(",", 1)[0].strip()
+                    if egg_dir.name in path:
+                        continue
+                    if "__init__." in path:
+                        modules.add(Path(path).parent.name.lower())
 
     if not modules:
         modules.add(package_name)

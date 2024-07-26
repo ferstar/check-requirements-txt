@@ -108,6 +108,9 @@ def parse_requirements(path: Path) -> Iterable[str]:
                 yield from parse_requirements(nested_path)
             if line.startswith("-") or DROP_LINE_P.search(line):
                 continue
+            if line.startswith("git+https") and "#egg=" in line:
+                yield line.rsplit("#egg=", maxsplit=1)[-1].strip()
+                continue
             for req in pkg_resources.parse_requirements(line):
                 yield req.key
                 for ext in req.extras:

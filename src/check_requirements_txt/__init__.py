@@ -9,6 +9,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Dict, Generator, Iterable, List, Optional, Sequence, Set, Union
 
+
 import pkg_resources
 
 MODULE_IMPORT_P = re.compile(r"^\s*?import\s+(?P<module>[a-zA-Z0-9_]+)")
@@ -98,23 +99,31 @@ def find_real_modules(package_name: str) -> List[str]:
 
 
 def parse_requirements(path: Path) -> Iterable[str]:
-    with open(path) as req_file:
-        for line in req_file:
-            if line.startswith("-r"):
-                # nested requirements path: "-r another-path.txt"
-                nested_path = Path(line.replace("-r", "", 1).split("#", 1)[0].strip())
-                if not nested_path.exists():
-                    nested_path = path.parent.joinpath(nested_path)
-                yield from parse_requirements(nested_path)
-            if line.startswith("-") or DROP_LINE_P.search(line):
-                continue
-            if line.startswith("git+https") and "#egg=" in line:
-                yield line.rsplit("#egg=", maxsplit=1)[-1].strip()
-                continue
-            for req in pkg_resources.parse_requirements(line):
-                yield req.key
-                for ext in req.extras:
-                    yield ext.lower()
+
+    supported_encodings = ['utf-8', 'ISO-8859-1', 'utf-16']
+
+    for encoding in supported_encodings:
+        try:
+            with open(path, encoding=encoding) as req_file:
+                for line in req_file:
+                    if line.startswith("-r"):
+                        # nested requirements path: "-r another-path.txt"
+                        nested_path = Path(line.replace("-r", "", 1).split("#", 1)[0].strip())
+                        if not nested_path.exists():
+                            nested_path = path.parent.joinpath(nested_path)
+                        yield from parse_requirements(nested_path)
+                    if line.startswith("-") or DROP_LINE_P.search(line):
+                        continue
+                    if line.startswith("git+https") and "#egg=" in line:
+                        yield line.rsplit("#egg=", maxsplit=1)[-1].strip()
+                        continue
+                    for req in pkg_resources.parse_requirements(line):
+                        yield req.key
+                        for ext in req.extras:
+                            yield ext.lower()
+            break
+        except:
+            continue
 
 
 def load_req_modules(req_path: Union[Path, str]) -> Dict[str, Set[str]]:

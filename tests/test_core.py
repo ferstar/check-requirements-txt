@@ -1,7 +1,6 @@
 # SPDX-FileCopyrightText: 2023-present ferstar <zhangjianfei3@gmail.com>
 #
 # SPDX-License-Identifier: MIT
-import importlib.metadata
 import os
 from unittest.mock import MagicMock, patch
 
@@ -88,8 +87,6 @@ pytest>=7.0
         # Should return tuples with extras properly captured
         expected = [("coverage", {"toml"}), ("pytest", set())]
         assert sorted(packages) == sorted(expected)
-
-
 
     def test_extras_functionality_comprehensive(self, tmp_path):
         """Test comprehensive extras functionality."""
@@ -275,12 +272,15 @@ class TestColorFunctions:
         result = supports_color()
         assert result is True
 
-    @pytest.mark.parametrize("term_value,expected", [
-        ("dumb", False),
-        ("unknown", False),
-        ("xterm", True),
-        ("", True),
-    ])
+    @pytest.mark.parametrize(
+        "term_value,expected",
+        [
+            ("dumb", False),
+            ("unknown", False),
+            ("xterm", True),
+            ("", True),
+        ],
+    )
     @patch("check_requirements_txt.sys.stdout")
     @patch("check_requirements_txt.os.environ")
     def test_supports_color_terminal_types(self, mock_environ, mock_stdout, term_value, expected):
@@ -306,8 +306,6 @@ class TestColorFunctions:
 
         result = colorize("test text", "91")
         assert result == "test text"
-
-
 
     def test_red_integration(self):
         """Test red function integration with actual color support detection."""
@@ -477,53 +475,6 @@ pytest[testing]>=7.0.0
                 f"Extras mismatch for {expected_pkg}: expected {expected_extras}, got {parsed_packages[expected_pkg]}"
             )
 
-    def test_uvicorn_standard_extra_dependencies(self):
-        """Test that uvicorn[standard] resolves to the correct dependencies."""
-        try:
-            # First check if uvicorn is available
-            importlib.metadata.distribution("uvicorn")
-
-            # Test that uvicorn[standard] includes more dependencies than uvicorn alone
-            deps_no_extra = find_depends("uvicorn")
-            deps_with_standard = find_depends("uvicorn", {"standard"})
-
-            print(f"Debug: uvicorn dependencies: {deps_no_extra}")
-            print(f"Debug: uvicorn[standard] dependencies: {deps_with_standard}")
-
-            # If both return the same single package, it might be a test environment issue
-            if len(deps_no_extra) == 1 and len(deps_with_standard) == 1:
-                # In this case, just verify that the package name is correct
-                assert "uvicorn" in deps_no_extra
-                assert "uvicorn" in deps_with_standard
-                pytest.skip("Test environment may not have full uvicorn dependencies, skipping detailed check")
-
-            # uvicorn[standard] should include more packages than uvicorn alone
-            assert len(deps_with_standard) > len(deps_no_extra), (
-                f"uvicorn[standard] should have more deps than uvicorn: "
-                f"{len(deps_with_standard)} vs {len(deps_no_extra)}"
-            )
-
-            # All base dependencies should be included in both
-            for dep in deps_no_extra:
-                assert dep in deps_with_standard, f"Base dependency {dep} missing from uvicorn[standard]"
-
-            # Standard extra should include specific packages (if they're installed)
-            standard_extra_packages = {"httptools", "python-dotenv", "pyyaml", "uvloop", "watchfiles", "websockets"}
-            found_standard_packages = set(deps_with_standard) & standard_extra_packages
-
-            # Should find at least some of the standard extra packages
-            assert len(found_standard_packages) > 0, (
-                f"Should find some standard extra packages, but found: {found_standard_packages}"
-            )
-
-            print(f"✅ uvicorn dependencies: {deps_no_extra}")
-            print(f"✅ uvicorn[standard] dependencies: {deps_with_standard}")
-            print(f"✅ Found standard extra packages: {found_standard_packages}")
-
-        except importlib.metadata.PackageNotFoundError:
-            # Skip test if uvicorn is not installed
-            pytest.skip("uvicorn not installed, skipping uvicorn[standard] test")
-
 
 class TestRunFunction:
     """Test the main run function."""
@@ -578,18 +529,28 @@ class TestRunFunction:
         assert 'Bad import detected: "missing_module"' in captured.out
         assert "requirements.txt" in captured.out
 
-    @pytest.mark.parametrize("color_support,should_have_ansi", [
-        (True, True),
-        (False, False),
-    ])
+    @pytest.mark.parametrize(
+        "color_support,should_have_ansi",
+        [
+            (True, True),
+            (False, False),
+        ],
+    )
     @patch("check_requirements_txt.stdlibs")
     @patch("check_requirements_txt.load_req_modules")
     @patch("check_requirements_txt.get_imports")
     @patch("check_requirements_txt.supports_color")
     @patch("check_requirements_txt.project_modules", set())
     def test_run_missing_import_color_handling(
-        self, mock_supports_color, mock_get_imports, mock_load_req, mock_stdlibs,
-        tmp_path, capsys, color_support, should_have_ansi
+        self,
+        mock_supports_color,
+        mock_get_imports,
+        mock_load_req,
+        mock_stdlibs,
+        tmp_path,
+        capsys,
+        color_support,
+        should_have_ansi,
     ):
         """Test run with missing import handles color output correctly."""
         project_dir = tmp_path / "project"

@@ -59,10 +59,10 @@ cov = [
 python = ["3.10", "3.11", "3.12", "3.13"]
 
 [tool.hatch.envs.lint]
-detached = true
 dependencies = [
   "pyright>=1.1.0",
   "ruff>=0.4.3",
+  "pytest",
 ]
 [tool.hatch.envs.lint.scripts]
 typing = "pyright {args:src/check_requirements_txt tests}"
@@ -79,6 +79,16 @@ all = [
   "style",
   "typing",
 ]
+
+[tool.pyright]
+include = ["src", "tests"]
+exclude = ["**/__pycache__", "**/.pytest_cache"]
+pythonVersion = "3.12"
+typeCheckingMode = "basic"
+reportMissingImports = true
+reportMissingTypeStubs = false
+reportUnusedImport = true
+reportUnusedVariable = true
 
 
 [tool.ruff]

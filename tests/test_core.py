@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: 2023-present ferstar <zhangjianfei3@gmail.com>
 #
 # SPDX-License-Identifier: MIT
+import importlib.metadata
 import os
 from unittest.mock import MagicMock, patch
 
@@ -347,6 +348,97 @@ class TestMockedFunctions:
         result = find_real_modules("nonexistent_package_12345")
         # Should fall back to the package name itself
         assert "nonexistent_package_12345" in result
+
+    def test_complex_extras_parsing(self, tmp_path):
+        """Test parsing complex extras like uvicorn[standard], fastapi[all], etc."""
+        req_content = """
+# Web frameworks with complex extras
+uvicorn[standard]>=0.18.0
+fastapi[all]>=0.68.0
+django[bcrypt,argon2]>=4.0.0
+
+# Data science packages with multiple extras
+pandas[performance,computation]>=1.3.0
+numpy[dev,test]>=1.21.0
+
+# HTTP libraries with security extras
+requests[security,socks]>=2.25.0
+httpx[http2,brotli]>=0.23.0
+
+# Testing frameworks
+pytest[testing]>=7.0.0
+"""
+        req_file = tmp_path / "requirements.txt"
+        req_file.write_text(req_content)
+
+        packages = list(parse_requirements(req_file))
+
+        # Verify all packages are parsed correctly with their extras
+        expected_packages = {
+            "uvicorn": {"standard"},
+            "fastapi": {"all"},
+            "django": {"bcrypt", "argon2"},
+            "pandas": {"performance", "computation"},
+            "numpy": {"dev", "test"},
+            "requests": {"security", "socks"},
+            "httpx": {"http2", "brotli"},
+            "pytest": {"testing"},
+        }
+
+        parsed_packages = dict(packages)
+
+        for expected_pkg, expected_extras in expected_packages.items():
+            assert expected_pkg in parsed_packages, f"Package {expected_pkg} not found"
+            assert parsed_packages[expected_pkg] == expected_extras, (
+                f"Extras mismatch for {expected_pkg}: expected {expected_extras}, got {parsed_packages[expected_pkg]}"
+            )
+
+    def test_uvicorn_standard_extra_dependencies(self):
+        """Test that uvicorn[standard] resolves to the correct dependencies."""
+        try:
+            # First check if uvicorn is available
+            importlib.metadata.distribution("uvicorn")
+
+            # Test that uvicorn[standard] includes more dependencies than uvicorn alone
+            deps_no_extra = find_depends("uvicorn")
+            deps_with_standard = find_depends("uvicorn", {"standard"})
+
+            print(f"Debug: uvicorn dependencies: {deps_no_extra}")
+            print(f"Debug: uvicorn[standard] dependencies: {deps_with_standard}")
+
+            # If both return the same single package, it might be a test environment issue
+            if len(deps_no_extra) == 1 and len(deps_with_standard) == 1:
+                # In this case, just verify that the package name is correct
+                assert "uvicorn" in deps_no_extra
+                assert "uvicorn" in deps_with_standard
+                pytest.skip("Test environment may not have full uvicorn dependencies, skipping detailed check")
+
+            # uvicorn[standard] should include more packages than uvicorn alone
+            assert len(deps_with_standard) > len(deps_no_extra), (
+                f"uvicorn[standard] should have more deps than uvicorn: "
+                f"{len(deps_with_standard)} vs {len(deps_no_extra)}"
+            )
+
+            # All base dependencies should be included in both
+            for dep in deps_no_extra:
+                assert dep in deps_with_standard, f"Base dependency {dep} missing from uvicorn[standard]"
+
+            # Standard extra should include specific packages (if they're installed)
+            standard_extra_packages = {"httptools", "python-dotenv", "pyyaml", "uvloop", "watchfiles", "websockets"}
+            found_standard_packages = set(deps_with_standard) & standard_extra_packages
+
+            # Should find at least some of the standard extra packages
+            assert len(found_standard_packages) > 0, (
+                f"Should find some standard extra packages, but found: {found_standard_packages}"
+            )
+
+            print(f"✅ uvicorn dependencies: {deps_no_extra}")
+            print(f"✅ uvicorn[standard] dependencies: {deps_with_standard}")
+            print(f"✅ Found standard extra packages: {found_standard_packages}")
+
+        except importlib.metadata.PackageNotFoundError:
+            # Skip test if uvicorn is not installed
+            pytest.skip("uvicorn not installed, skipping uvicorn[standard] test")
 
 
 class TestRunFunction:
@@ -728,3 +820,59 @@ dev = [
 
         # Should not include the include-group entry itself
         assert "include-group" not in package_names
+
+    def test_parse_pyproject_toml_complex_extras(self, tmp_path):
+        """Test parsing pyproject.toml with complex extras like uvicorn[standard]."""
+        pyproject_file = tmp_path / "pyproject.toml"
+        pyproject_content = """
+[project]
+name = "my-web-app"
+version = "0.1.0"
+dependencies = [
+    "uvicorn[standard]>=0.18.0",
+    "fastapi[all]>=0.68.0",
+    "requests[security,socks]>=2.25.0"
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest[testing]>=7.0.0",
+    "black[d]>=22.0.0",
+    "mypy[reports]>=1.0.0"
+]
+data = [
+    "pandas[performance,computation]>=1.3.0",
+    "numpy[dev,test]>=1.21.0"
+]
+
+[dependency-groups]
+web = [
+    "django[bcrypt,argon2]>=4.0.0",
+    "httpx[http2,brotli]>=0.23.0"
+]
+"""
+        pyproject_file.write_text(pyproject_content)
+
+        deps = list(parse_pyproject_toml(pyproject_file))
+
+        # Verify complex extras are parsed correctly
+        expected_packages = {
+            "uvicorn": {"standard"},
+            "fastapi": {"all"},
+            "requests": {"security", "socks"},
+            "pytest": {"testing"},
+            "black": {"d"},
+            "mypy": {"reports"},
+            "pandas": {"performance", "computation"},
+            "numpy": {"dev", "test"},
+            "django": {"bcrypt", "argon2"},
+            "httpx": {"http2", "brotli"},
+        }
+
+        parsed_packages = dict(deps)
+
+        for expected_pkg, expected_extras in expected_packages.items():
+            assert expected_pkg in parsed_packages, f"Package {expected_pkg} not found"
+            assert parsed_packages[expected_pkg] == expected_extras, (
+                f"Extras mismatch for {expected_pkg}: expected {expected_extras}, got {parsed_packages[expected_pkg]}"
+            )

@@ -1,7 +1,7 @@
 *.egg-info
 *.pyc
 /.coverage
-/.mypy_cache
+/.pyright_cache
 /.pytest_cache
 /.tox
 /venv*

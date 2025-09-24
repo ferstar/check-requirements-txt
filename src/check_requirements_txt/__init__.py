@@ -2,37 +2,40 @@
 #
 # SPDX-License-Identifier: MIT
 import argparse
+import importlib.metadata
+import locale
 import os
 import re
 import sys
 from collections import defaultdict
+from collections.abc import Generator, Iterable, Sequence
 from pathlib import Path
-from typing import Dict, Generator, Iterable, List, Optional, Sequence, Set, Union
 
-import pkg_resources
+try:
+    import tomllib
+except ImportError:
+    import tomli as tomllib  # type: ignore[no-redef]
+
+from packaging.requirements import Requirement
 
 MODULE_IMPORT_P = re.compile(r"^\s*?import\s+(?P<module>[a-zA-Z0-9_]+)")
 MODULE_FROM_P = re.compile(r"^\s*?from\s+(?P<module>[a-zA-Z0-9_]+).*?\simport")
 DROP_LINE_P = re.compile(r"^\w+:/+", re.I)
+
 project_modules = set()
 
 
-def stdlibs() -> List[str]:
-    ver = sys.version_info
-    if ver < (3, 10):
-        from stdlib_list import stdlib_list
-        return stdlib_list(f"{ver.major}.{ver.minor}")
-    else:
-        return list(set(list(sys.stdlib_module_names) + list(sys.builtin_module_names)))
+def stdlibs() -> list[str]:
+    return list(set(list(sys.stdlib_module_names) + list(sys.builtin_module_names)))
 
 
-def find_depends(package_name: str) -> List[str]:
+def find_depends(package_name: str) -> list[str]:
     requires = set()
-    to_process = [package_name]
+    to_process = {package_name}
     processed = set()
 
     while to_process:
-        current_package = to_process.pop(0)
+        current_package = to_process.pop()
 
         if current_package in processed:
             continue
@@ -40,68 +43,138 @@ def find_depends(package_name: str) -> List[str]:
         processed.add(current_package)
 
         try:
-            dist_obj = pkg_resources.get_distribution(current_package)
-        except pkg_resources.DistributionNotFound:
+            dist = importlib.metadata.distribution(current_package)
+        except importlib.metadata.PackageNotFoundError:
+            # If the package itself is not found, add it to requirements.
+            # This could happen if a requirement is specified but not installed.
             requires.add(current_package)
             continue
 
-        requires.add(current_package)
+        requires.add(dist.metadata["Name"])  # Use normalized name
 
-        for req in dist_obj.requires():
-            if req.marker and not req.marker.evaluate():
-                continue
-            to_process.append(req.name)
-
+        if dist.requires:
+            for req_str in dist.requires:
+                req = Requirement(req_str)
+                # Skip requirements with markers that don't evaluate to True
+                if req.marker and not req.marker.evaluate():
+                    continue
+                to_process.add(req.name)
     return list(requires)
 
 
-def find_real_modules(package_name: str) -> List[str]:
+def find_real_modules(package_name: str) -> list[str]:
     modules = set()
-    to_process = [package_name]
-    processed = set()
+    # Normalize package name for lookup
+    normalized_package_name = package_name.replace("-", "_").lower()
 
-    while to_process:
-        current_package = to_process.pop(0)
+    try:
+        dist = importlib.metadata.distribution(package_name)
+    except importlib.metadata.PackageNotFoundError:
+        # If package not found, assume the package name is the module name
+        modules.add(normalized_package_name)
+        return list(modules)
 
-        if current_package in processed:
-            continue
+    # Try to find top_level.txt
+    if dist.files:
+        for file_path in dist.files:
+            if file_path.name == "top_level.txt":
+                content = dist.read_text(file_path.name)
+                if content:
+                    for line in content.splitlines():
+                        module_name = line.strip().lower()
+                        if module_name:
+                            modules.add(module_name)
+                    # If top_level.txt is found and processed, we can often return early
+                    if modules:
+                        return list(modules)
 
-        processed.add(current_package)
+    # If top_level.txt is not found or empty, infer from file paths
+    if dist.files:
+        for file_path in dist.files:
+            path_str = str(file_path)
+            # Common patterns for module files or directories
+            if path_str.endswith(".py") and "/" in path_str:  # part of a package
+                module_name = path_str.split("/", 1)[0].lower()
+                modules.add(module_name.replace("-", "_"))
+            elif path_str.endswith(".py"):  # a top-level .py file
+                module_name = file_path.name[:-3].lower()  # remove .py
+                modules.add(module_name.replace("-", "_"))
+            elif "__init__.py" in path_str:  # an __init__.py file indicates a package
+                module_name = Path(path_str).parent.name.lower()
+                modules.add(module_name.replace("-", "_"))
 
-        try:
-            egg_dir = Path(pkg_resources.get_distribution(current_package).egg_info)
-        except pkg_resources.DistributionNotFound:
-            modules.add(current_package)
-            continue
-
-        top_level_file = egg_dir / "top_level.txt"
-        if top_level_file.exists() and top_level_file.is_file():
-            with open(top_level_file) as file_obj:
-                for line in file_obj:
-                    modules.add(line.strip().lower())
-
-        # Some packages do not have "top_level.txt", such as "attrs".
-        # We can use "RECORD" file to find the possible modules.
-        record = egg_dir / "RECORD"
-        if record.exists() and record.is_file():
-            with open(record) as file_obj:
-                for line in file_obj:
-                    path = line.split(",", 1)[0].strip()
-                    if egg_dir.name in path:
-                        continue
-                    if "__init__." in path:
-                        modules.add(Path(path).parent.name.lower())
-
+    # If no modules were found through file parsing, fall back to package name
     if not modules:
-        modules.add(package_name)
+        modules.add(normalized_package_name)
     return list(modules)
 
 
-def parse_requirements(path: Path) -> Iterable[str]:
-    import locale
+def parse_pyproject_toml(path: Path) -> Iterable[str]:
+    """Parse dependencies from pyproject.toml file.
 
+    Supports:
+    - project.dependencies
+    - project.optional-dependencies
+    - dependency-groups
+    - tool.uv.dev-dependencies (legacy)
+    """
+    try:
+        with open(path, "rb") as f:
+            data = tomllib.load(f)
+    except (tomllib.TOMLDecodeError, OSError) as e:
+        print(f"Warning: Failed to parse {path}: {e}")
+        return
+
+    # Parse project.dependencies
+    project = data.get("project", {})
+    dependencies = project.get("dependencies", [])
+    for dep in dependencies:
+        try:
+            req = Requirement(dep)
+            yield req.name.lower().replace("_", "-")
+        except ValueError:
+            # Invalid requirement, skip
+            continue
+
+    # Parse project.optional-dependencies
+    optional_deps = project.get("optional-dependencies", {})
+    for _extra_name, deps in optional_deps.items():
+        for dep in deps:
+            try:
+                req = Requirement(dep)
+                yield req.name.lower().replace("_", "-")
+            except ValueError:
+                continue
+
+    # Parse dependency-groups (PEP 735)
+    dependency_groups = data.get("dependency-groups", {})
+    for _group_name, deps in dependency_groups.items():
+        for dep in deps:
+            # Handle include-group syntax
+            if isinstance(dep, dict) and "include-group" in dep:
+                # Skip include-group entries, they reference other groups
+                continue
+            if isinstance(dep, str):
+                try:
+                    req = Requirement(dep)
+                    yield req.name.lower().replace("_", "-")
+                except ValueError:
+                    continue
+
+    # Parse tool.uv.dev-dependencies (legacy)
+    tool_uv = data.get("tool", {}).get("uv", {})
+    dev_deps = tool_uv.get("dev-dependencies", [])
+    for dep in dev_deps:
+        try:
+            req = Requirement(dep)
+            yield req.name.lower().replace("_", "-")
+        except ValueError:
+            continue
+
+
+def parse_requirements(path: Path) -> Iterable[str]:
     system_encoding = locale.getpreferredencoding()
-    supported_encodings = ['utf-8', 'ISO-8859-1', 'utf-16']
+    supported_encodings = ["utf-8", "ISO-8859-1", "utf-16"]
 
     if system_encoding not in supported_encodings:
         supported_encodings.insert(1, system_encoding)
@@ -110,22 +183,41 @@ def parse_requirements(path: Path) -> Iterable[str]:
     for encoding in supported_encodings:
         try:
             with open(path, encoding=encoding) as req_file:
-                for line in req_file:
+                for raw_line in req_file:
+                    line = raw_line.strip()
+                    if not line or line.startswith("#"):
+                        continue
                     if line.startswith("-r"):
                         # nested requirements path: "-r another-path.txt"
                         nested_path = Path(line.replace("-r", "", 1).split("#", 1)[0].strip())
                         if not nested_path.exists():
                             nested_path = path.parent.joinpath(nested_path)
                         yield from parse_requirements(nested_path)
+                        continue
                     if line.startswith("-") or DROP_LINE_P.search(line):
                         continue
                     if line.startswith("git+https") and "#egg=" in line:
-                        yield line.rsplit("#egg=", maxsplit=1)[-1].strip()
+                        yield line.rsplit("#egg=", maxsplit=1)[-1].strip().lower().replace("_", "-")
                         continue
-                    for req in pkg_resources.parse_requirements(line):
-                        yield req.key
+
+                    # Remove inline comments
+                    clean_line = line.split("#", 1)[0].strip()
+                    if not clean_line:
+                        continue
+
+                    try:
+                        req = Requirement(clean_line)
+                        yield req.name.lower().replace("_", "-")  # Normalize to lowercase and hyphenated
                         for ext in req.extras:
-                            yield ext.lower()
+                            # Extras are usually part of the package name for lookup purposes
+                            # e.g., package[extra] should make 'package' and 'extra' discoverable
+                            # However, the original code yielded extras separately.
+                            # For now, let's assume extras might be sub-packages or related packages
+                            # This behavior might need refinement based on actual usage.
+                            yield ext.lower().replace("_", "-")
+                    except ValueError:  # Catches RequirementParseError from packaging.requirements
+                        # Invalid requirement line, skip
+                        continue
             return
         except (UnicodeDecodeError, UnicodeError) as e:
             last_error = e
@@ -133,17 +225,23 @@ def parse_requirements(path: Path) -> Iterable[str]:
         except Exception as e:
             raise e
 
-    raise UnicodeDecodeError(
-        f"Failed to decode {path} with any supported encoding: {supported_encodings}. "
-        f"Last error: {last_error}"
-    )
+    msg = f"Failed to decode {path} with any supported encoding: {supported_encodings}. Last error: {last_error}"
+    encoding = "unknown"
+    raise UnicodeDecodeError(encoding, b"", 0, 1, msg)
 
 
-def load_req_modules(req_path: Union[Path, str]) -> Dict[str, Set[str]]:
+def load_req_modules(req_path: Path | str) -> dict[str, set[str]]:
     modules = defaultdict(set)
     if isinstance(req_path, str):
         req_path = Path(req_path)
-    for package in parse_requirements(req_path):
+
+    # Determine parser based on file extension
+    if req_path.name.endswith((".toml", "pyproject.toml")):
+        parser = parse_pyproject_toml
+    else:
+        parser = parse_requirements
+
+    for package in parser(req_path):
         for module in find_real_modules(package):
             modules[module].add(package)
         for pack in find_depends(package):
@@ -152,10 +250,8 @@ def load_req_modules(req_path: Union[Path, str]) -> Dict[str, Set[str]]:
     return modules
 
 
-def get_imports(
-        paths: Union[Generator[Path, None, None], List[Path]]
-) -> Dict[str, Set[str]]:
-    modules: Dict[str, Set[str]] = defaultdict(set)
+def get_imports(paths: Generator[Path, None, None] | list[Path]) -> dict[str, set[str]]:
+    modules: dict[str, set[str]] = defaultdict(set)
 
     def process_path(p: Path):
         if p.is_file() and p.suffix.lower() == ".py":
@@ -176,11 +272,11 @@ def get_imports(
     return modules
 
 
-def param_as_set(value: str) -> Set[str]:
+def param_as_set(value: str) -> set[str]:
     return {v.strip() for v in value.split(",") if v}
 
 
-def run(argv: Optional[Sequence[str]] = None) -> int:
+def run(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("filenames", nargs="*")
     parser.add_argument(
@@ -190,61 +286,56 @@ def run(argv: Optional[Sequence[str]] = None) -> int:
         default="pip",
         help="ignore,modules,with,comma,separated",
     )
-    parser.add_argument(
-        "-d", "--dst_dir", default="", help="destination directory you want to check"
-    )
+    parser.add_argument("-d", "--dst_dir", default="", help="destination directory you want to check")
     parser.add_argument(
         "-r",
         "--req-txt-path",
         dest="req_paths",
         type=param_as_set,
         default="",
-        help="path of your requirements file(with comma separated)",
+        help="path of your requirements file or pyproject.toml (with comma separated)",
     )
     args = parser.parse_args(argv)
-    if not argv and len(sys.argv) < 2:
+    if not argv and not any([args.filenames, args.dst_dir, args.req_paths]):
         parser.print_help()
         sys.exit(0)
 
-    builtin_modules: Dict[str, Set[str]] = defaultdict(set)
+    builtin_modules: dict[str, set[str]] = defaultdict(set)
     builtin_modules.update(
-        {
-            i: set()
-            for i in stdlibs()
-        },
+        {i: set() for i in stdlibs()},
     )
-    path_list = [
-        Path(p).absolute() for p in args.filenames if p.lower().endswith(".py")
-    ]
+    path_list = [Path(p).absolute() for p in args.filenames if p.lower().endswith(".py")]
     if args.dst_dir:
         path_list.append(Path(args.dst_dir).absolute())
 
-    project_dirs = [
-        p
-        for p in path_list
-        if p.is_dir() and not any(p.name.startswith(".") for p in p.parents)
-    ]
+    project_dirs = [p for p in path_list if p.is_dir() and not any(p.name.startswith(".") for p in p.parents)]
     if not project_dirs:
         project_dirs.append(Path().cwd())
 
     project_modules.update(
-        os.path.splitext(p.as_posix().replace(project.as_posix(), "").lstrip("/"))[
-            0
-        ].replace("/", ".")
+        os.path.splitext(p.as_posix().replace(project.as_posix(), "").lstrip("/"))[0].replace("/", ".")
         for project in project_dirs
         for p in project.glob("**/*.py")
-        if not p.name.startswith(".")
-        and p.name != "__init__.py"
-        and (os.path.isdir(p) or p.name.endswith(".py"))
+        if not p.name.startswith(".") and p.name != "__init__.py" and (os.path.isdir(p) or p.name.endswith(".py"))
     )
     project_modules.update(m for p in project_modules.copy() for m in p.split("."))
 
     if not args.req_paths:
         for project in project_dirs:
-            for path in args.req_paths or project.glob("**/*requirement*.txt"):
+            # Look for pyproject.toml files first
+            pyproject_files = list(project.glob("**/pyproject.toml"))
+            for path in pyproject_files:
                 args.req_paths.add(path)
+
+            # Then look for requirements.txt files
+            for path in project.glob("**/*requirement*.txt"):
+                args.req_paths.add(path)
+
     if not args.req_paths:
-        msg = 'No files matched pattern "*requirement*.txt", you need to specify the requirement(s) path(s)'
+        msg = (
+            'No files matched pattern "*requirement*.txt" or "pyproject.toml", '
+            "you need to specify the requirement(s) path(s)"
+        )
         raise ValueError(msg)
 
     for path in args.req_paths:
@@ -272,5 +363,10 @@ def run(argv: Optional[Sequence[str]] = None) -> int:
     return error_count
 
 
-if __name__ == "__main__":
+def main() -> None:
+    """Main entry point for the application."""
     sys.exit(run())
+
+
+if __name__ == "__main__":
+    main()

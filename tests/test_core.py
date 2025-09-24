@@ -89,25 +89,7 @@ pytest>=7.0
         expected = [("coverage", {"toml"}), ("pytest", set())]
         assert sorted(packages) == sorted(expected)
 
-    def test_load_req_modules_with_extras(self, tmp_path):
-        """Test that load_req_modules properly handles packages with extras."""
-        req_content = """
-coverage[toml]>=6.0
-requests[security]>=2.25.0
-        """
-        req_file = tmp_path / "requirements.txt"
-        req_file.write_text(req_content)
 
-        # Test the full pipeline
-        modules = load_req_modules(req_file)
-
-        # Should contain modules for both main packages and their extras
-        # Note: This test might fail if the packages aren't installed
-        print("Loaded modules:", dict(modules))
-
-        # At minimum, we should have entries for the main packages
-        assert any("coverage" in str(packages) for packages in modules.values())
-        assert any("requests" in str(packages) for packages in modules.values())
 
     def test_extras_functionality_comprehensive(self, tmp_path):
         """Test comprehensive extras functionality."""
@@ -201,33 +183,25 @@ pytest>=7.0
             assert "<<<" not in package_name
             assert ">>>" not in package_name
 
-    def test_parse_requirements_encoding_fallback(self, tmp_path):
-        """Test requirements parsing with different encodings."""
-        # Create a file with special characters
+    def test_parse_requirements_encoding_handling(self, tmp_path):
+        """Test requirements parsing with different encodings and errors."""
+        # Test 1: Latin-1 encoding with special characters
         req_content = "# Comment with special chars: café\nrequests>=2.25.0\n"
-        req_file = tmp_path / "requirements.txt"
-
-        # Write with latin-1 encoding
+        req_file = tmp_path / "requirements_latin1.txt"
         req_file.write_bytes(req_content.encode("latin-1"))
 
         packages = list(parse_requirements(req_file))
         package_names = extract_package_names(packages)
-
-        # Should still parse the valid requirement
         assert "requests" in package_names
 
-    def test_parse_requirements_encoding_error(self, tmp_path):
-        """Test requirements parsing with unsupported encoding."""
-        req_file = tmp_path / "requirements.txt"
-
-        # Create a file with invalid bytes that can't be decoded
+        # Test 2: Invalid bytes that can't be decoded
+        invalid_file = tmp_path / "requirements_invalid.txt"
         invalid_bytes = b"\xff\xfe\x00\x00invalid content"
-        req_file.write_bytes(invalid_bytes)
+        invalid_file.write_bytes(invalid_bytes)
 
-        # Should raise UnicodeDecodeError for completely invalid content
+        # Should handle encoding errors gracefully
         try:
-            list(parse_requirements(req_file))
-            # If we get here, the file was somehow decoded, which is fine
+            list(parse_requirements(invalid_file))
         except UnicodeDecodeError:
             # This is expected for truly invalid content
             pass
@@ -301,25 +275,21 @@ class TestColorFunctions:
         result = supports_color()
         assert result is True
 
+    @pytest.mark.parametrize("term_value,expected", [
+        ("dumb", False),
+        ("unknown", False),
+        ("xterm", True),
+        ("", True),
+    ])
     @patch("check_requirements_txt.sys.stdout")
     @patch("check_requirements_txt.os.environ")
-    def test_supports_color_dumb_terminal(self, mock_environ, mock_stdout):
-        """Test supports_color returns False for dumb terminal."""
+    def test_supports_color_terminal_types(self, mock_environ, mock_stdout, term_value, expected):
+        """Test supports_color with different TERM values."""
         mock_stdout.isatty.return_value = True
-        mock_environ.get.side_effect = lambda key, default="": "dumb" if key == "TERM" else default
+        mock_environ.get.side_effect = lambda key, default="": term_value if key == "TERM" else default
 
         result = supports_color()
-        assert result is False
-
-    @patch("check_requirements_txt.sys.stdout")
-    @patch("check_requirements_txt.os.environ")
-    def test_supports_color_unknown_terminal(self, mock_environ, mock_stdout):
-        """Test supports_color returns False for unknown terminal."""
-        mock_stdout.isatty.return_value = True
-        mock_environ.get.side_effect = lambda key, default="": "unknown" if key == "TERM" else default
-
-        result = supports_color()
-        assert result is False
+        assert result is expected
 
     @patch("check_requirements_txt.supports_color")
     def test_colorize_with_color_support(self, mock_supports_color):
@@ -337,25 +307,7 @@ class TestColorFunctions:
         result = colorize("test text", "91")
         assert result == "test text"
 
-    @patch("check_requirements_txt.colorize")
-    def test_red_function(self, mock_colorize):
-        """Test red function calls colorize with correct color code."""
-        mock_colorize.return_value = "colored text"
 
-        result = red("test text")
-
-        mock_colorize.assert_called_once_with("test text", "91")
-        assert result == "colored text"
-
-    @patch("check_requirements_txt.colorize")
-    def test_yellow_function(self, mock_colorize):
-        """Test yellow function calls colorize with correct color code."""
-        mock_colorize.return_value = "colored text"
-
-        result = yellow("test text")
-
-        mock_colorize.assert_called_once_with("test text", "93")
-        assert result == "colored text"
 
     def test_red_integration(self):
         """Test red function integration with actual color support detection."""
@@ -626,15 +578,20 @@ class TestRunFunction:
         assert 'Bad import detected: "missing_module"' in captured.out
         assert "requirements.txt" in captured.out
 
+    @pytest.mark.parametrize("color_support,should_have_ansi", [
+        (True, True),
+        (False, False),
+    ])
     @patch("check_requirements_txt.stdlibs")
     @patch("check_requirements_txt.load_req_modules")
     @patch("check_requirements_txt.get_imports")
     @patch("check_requirements_txt.supports_color")
     @patch("check_requirements_txt.project_modules", set())
-    def test_run_missing_import_with_color(
-        self, mock_supports_color, mock_get_imports, mock_load_req, mock_stdlibs, tmp_path, capsys
+    def test_run_missing_import_color_handling(
+        self, mock_supports_color, mock_get_imports, mock_load_req, mock_stdlibs,
+        tmp_path, capsys, color_support, should_have_ansi
     ):
-        """Test run with missing import shows colored output when color is supported."""
+        """Test run with missing import handles color output correctly."""
         project_dir = tmp_path / "project"
         project_dir.mkdir()
 
@@ -648,51 +605,22 @@ class TestRunFunction:
         mock_stdlibs.return_value = ["sys", "os", "re"]
         mock_load_req.return_value = {"some_other_package": {"some_other_package"}}
         mock_get_imports.return_value = {"missing_module": {f"{py_file}:1"}}
-        mock_supports_color.return_value = True
+        mock_supports_color.return_value = color_support
 
         return_code = run([str(project_dir), "--req-txt-path", str(req_file)])
         assert return_code == 1
 
         captured = capsys.readouterr()
-        # Should contain ANSI color codes for red text
-        assert "\033[91m" in captured.out  # Red color code
-        assert "\033[0m" in captured.out  # Reset color code
         assert 'Bad import detected: "missing_module"' in captured.out
         assert "requirements.txt" in captured.out
 
-    @patch("check_requirements_txt.stdlibs")
-    @patch("check_requirements_txt.load_req_modules")
-    @patch("check_requirements_txt.get_imports")
-    @patch("check_requirements_txt.supports_color")
-    @patch("check_requirements_txt.project_modules", set())
-    def test_run_missing_import_without_color(
-        self, mock_supports_color, mock_get_imports, mock_load_req, mock_stdlibs, tmp_path, capsys
-    ):
-        """Test run with missing import shows plain output when color is not supported."""
-        project_dir = tmp_path / "project"
-        project_dir.mkdir()
-
-        py_file = project_dir / "main.py"
-        py_file.write_text("import missing_module")
-
-        req_file = project_dir / "requirements.txt"
-        req_file.write_text("some_other_package")
-
-        # Mock functions
-        mock_stdlibs.return_value = ["sys", "os", "re"]
-        mock_load_req.return_value = {"some_other_package": {"some_other_package"}}
-        mock_get_imports.return_value = {"missing_module": {f"{py_file}:1"}}
-        mock_supports_color.return_value = False
-
-        return_code = run([str(project_dir), "--req-txt-path", str(req_file)])
-        assert return_code == 1
-
-        captured = capsys.readouterr()
-        # Should NOT contain ANSI color codes
-        assert "\033[91m" not in captured.out  # No red color code
-        assert "\033[0m" not in captured.out  # No reset color code
-        assert 'Bad import detected: "missing_module"' in captured.out
-        assert "requirements.txt" in captured.out
+        # Check ANSI codes based on color support
+        if should_have_ansi:
+            assert "\033[91m" in captured.out  # Red color code
+            assert "\033[0m" in captured.out  # Reset color code
+        else:
+            assert "\033[91m" not in captured.out  # No red color code
+            assert "\033[0m" not in captured.out  # No reset color code
 
     @patch("check_requirements_txt.stdlibs")
     @patch("check_requirements_txt.load_req_modules")

@@ -98,23 +98,45 @@ def find_real_modules(package_name: str) -> List[str]:
 
 
 def parse_requirements(path: Path) -> Iterable[str]:
-    with open(path) as req_file:
-        for line in req_file:
-            if line.startswith("-r"):
-                # nested requirements path: "-r another-path.txt"
-                nested_path = Path(line.replace("-r", "", 1).split("#", 1)[0].strip())
-                if not nested_path.exists():
-                    nested_path = path.parent.joinpath(nested_path)
-                yield from parse_requirements(nested_path)
-            if line.startswith("-") or DROP_LINE_P.search(line):
-                continue
-            if line.startswith("git+https") and "#egg=" in line:
-                yield line.rsplit("#egg=", maxsplit=1)[-1].strip()
-                continue
-            for req in pkg_resources.parse_requirements(line):
-                yield req.key
-                for ext in req.extras:
-                    yield ext.lower()
+    import locale
+
+    system_encoding = locale.getpreferredencoding()
+    supported_encodings = ['utf-8', 'ISO-8859-1', 'utf-16']
+
+    if system_encoding not in supported_encodings:
+        supported_encodings.insert(1, system_encoding)
+
+    last_error = None
+    for encoding in supported_encodings:
+        try:
+            with open(path, encoding=encoding) as req_file:
+                for line in req_file:
+                    if line.startswith("-r"):
+                        # nested requirements path: "-r another-path.txt"
+                        nested_path = Path(line.replace("-r", "", 1).split("#", 1)[0].strip())
+                        if not nested_path.exists():
+                            nested_path = path.parent.joinpath(nested_path)
+                        yield from parse_requirements(nested_path)
+                    if line.startswith("-") or DROP_LINE_P.search(line):
+                        continue
+                    if line.startswith("git+https") and "#egg=" in line:
+                        yield line.rsplit("#egg=", maxsplit=1)[-1].strip()
+                        continue
+                    for req in pkg_resources.parse_requirements(line):
+                        yield req.key
+                        for ext in req.extras:
+                            yield ext.lower()
+            return
+        except (UnicodeDecodeError, UnicodeError) as e:
+            last_error = e
+            continue
+        except Exception as e:
+            raise e
+
+    raise UnicodeDecodeError(
+        f"Failed to decode {path} with any supported encoding: {supported_encodings}. "
+        f"Last error: {last_error}"
+    )
 
 
 def load_req_modules(req_path: Union[Path, str]) -> Dict[str, Set[str]]:

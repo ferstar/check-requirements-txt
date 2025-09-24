@@ -1,0 +1,56 @@
+name: Lint
+
+on:
+  workflow_dispatch:
+    inputs:
+      fix-issues:
+        description: 'Auto-fix linting issues'
+        required: false
+        default: false
+        type: boolean
+  push:
+    paths:
+      - '**.py'
+      - 'pyproject.toml'
+      - '.github/workflows/lint.yml'
+  pull_request:
+    paths:
+      - '**.py'
+      - 'pyproject.toml'
+      - '.github/workflows/lint.yml'
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+
+    - name: Install hatch
+      run: pip install hatch
+
+    - name: Run ruff check
+      run: hatch run lint:style
+
+    - name: Run type checking
+      run: hatch run lint:typing
+
+    - name: Auto-fix issues
+      if: ${{ github.event.inputs.fix-issues == 'true' }}
+      run: |
+        hatch run lint:fmt
+        
+    - name: Commit fixes
+      if: ${{ github.event.inputs.fix-issues == 'true' }}
+      run: |
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        git add -A
+        git diff --staged --quiet || git commit -m "style: auto-fix linting issues"
+        git push

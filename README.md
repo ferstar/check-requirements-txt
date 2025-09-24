@@ -4,6 +4,8 @@ A tool (and also a pre-commit hook) to automatically check the missing packages 
 
 [![PyPI - Version](https://img.shields.io/pypi/v/check-requirements-txt.svg)](https://pypi.org/project/check-requirements-txt)
 [![PyPI - Python Version](https://img.shields.io/pypi/pyversions/check-requirements-txt.svg)](https://pypi.org/project/check-requirements-txt)
+[![CI](https://github.com/ferstar/check-requirements-txt/workflows/CI/badge.svg)](https://github.com/ferstar/check-requirements-txt/actions/workflows/ci.yml)
+[![Lint](https://github.com/ferstar/check-requirements-txt/workflows/Lint/badge.svg)](https://github.com/ferstar/check-requirements-txt/actions/workflows/lint.yml)
 
 -----
 

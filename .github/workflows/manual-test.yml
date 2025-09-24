@@ -1,0 +1,120 @@
+name: Manual Test
+
+on:
+  workflow_dispatch:
+    inputs:
+      python-versions:
+        description: 'Python versions to test (comma-separated, e.g., "3.10,3.12")'
+        required: false
+        default: '3.10,3.11,3.12,3.13'
+        type: string
+      run-lint:
+        description: 'Run linting checks'
+        required: false
+        default: true
+        type: boolean
+      run-build:
+        description: 'Build package'
+        required: false
+        default: true
+        type: boolean
+      test-install:
+        description: 'Test package installation'
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      python-versions: ${{ steps.parse.outputs.python-versions }}
+    steps:
+    - name: Parse Python versions
+      id: parse
+      run: |
+        versions="${{ github.event.inputs.python-versions }}"
+        # Convert comma-separated string to JSON array
+        json_array=$(echo "$versions" | sed 's/,/","/g' | sed 's/^/["/' | sed 's/$/"]/')
+        echo "python-versions=$json_array" >> $GITHUB_OUTPUT
+
+  test:
+    runs-on: ubuntu-latest
+    needs: setup
+    strategy:
+      matrix:
+        python-version: ${{ fromJSON(needs.setup.outputs.python-versions) }}
+      fail-fast: false
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: Install hatch
+      run: pip install hatch
+
+    - name: Run tests
+      run: hatch run test
+
+    - name: Run linting
+      if: ${{ github.event.inputs.run-lint == 'true' }}
+      run: hatch run lint:all
+
+  build:
+    runs-on: ubuntu-latest
+    if: ${{ github.event.inputs.run-build == 'true' }}
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+
+    - name: Install hatch
+      run: pip install hatch
+
+    - name: Build package
+      run: hatch build
+
+    - name: Upload build artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: dist
+        path: dist/
+
+  test-install:
+    runs-on: ubuntu-latest
+    needs: [build, setup]
+    if: ${{ github.event.inputs.test-install == 'true' && github.event.inputs.run-build == 'true' }}
+    strategy:
+      matrix:
+        python-version: ${{ fromJSON(needs.setup.outputs.python-versions) }}
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: Download build artifacts
+      uses: actions/download-artifact@v4
+      with:
+        name: dist
+        path: dist/
+
+    - name: Install package
+      run: |
+        pip install dist/*.whl
+
+    - name: Test installation
+      run: |
+        check-requirements-txt --help
+        # Test with current project
+        check-requirements-txt src/ -r pyproject.toml

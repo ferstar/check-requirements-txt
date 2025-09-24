@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from check_requirements_txt import (
+    colorize,
     find_depends,
     find_real_modules,
     get_imports,
@@ -16,8 +17,11 @@ from check_requirements_txt import (
     parse_pyproject_toml,
     parse_requirements,
     project_modules,
+    red,
     run,
     stdlibs,
+    supports_color,
+    yellow,
 )
 
 
@@ -246,6 +250,134 @@ class TestUtilityFunctions:
         assert "sys" in stdlib_modules
         assert "os" in stdlib_modules
         assert "re" in stdlib_modules
+
+
+class TestColorFunctions:
+    """Test color utility functions."""
+
+    @patch("check_requirements_txt.sys.stdout")
+    @patch("check_requirements_txt.os.environ")
+    def test_supports_color_with_tty_and_no_env_vars(self, mock_environ, mock_stdout):
+        """Test supports_color returns True when stdout is a TTY and no env vars are set."""
+        mock_stdout.isatty.return_value = True
+        mock_environ.get.side_effect = lambda _key, default="": default
+
+        result = supports_color()
+        assert result is True
+
+    @patch("check_requirements_txt.sys.stdout")
+    def test_supports_color_no_tty(self, mock_stdout):
+        """Test supports_color returns False when stdout is not a TTY."""
+        mock_stdout.isatty.return_value = False
+
+        result = supports_color()
+        assert result is False
+
+    @patch("check_requirements_txt.sys.stdout")
+    def test_supports_color_no_isatty_attribute(self, mock_stdout):
+        """Test supports_color returns False when stdout has no isatty attribute."""
+        del mock_stdout.isatty
+
+        result = supports_color()
+        assert result is False
+
+    @patch("check_requirements_txt.sys.stdout")
+    @patch("check_requirements_txt.os.environ")
+    def test_supports_color_no_color_env_var(self, mock_environ, mock_stdout):
+        """Test supports_color returns False when NO_COLOR is set."""
+        mock_stdout.isatty.return_value = True
+        mock_environ.get.side_effect = lambda key, default="": "1" if key == "NO_COLOR" else default
+
+        result = supports_color()
+        assert result is False
+
+    @patch("check_requirements_txt.sys.stdout")
+    @patch("check_requirements_txt.os.environ")
+    def test_supports_color_force_color_env_var(self, mock_environ, mock_stdout):
+        """Test supports_color returns True when FORCE_COLOR is set."""
+        mock_stdout.isatty.return_value = False  # Even if not a TTY
+        mock_environ.get.side_effect = lambda key, default="": "1" if key == "FORCE_COLOR" else default
+
+        result = supports_color()
+        assert result is True
+
+    @patch("check_requirements_txt.sys.stdout")
+    @patch("check_requirements_txt.os.environ")
+    def test_supports_color_dumb_terminal(self, mock_environ, mock_stdout):
+        """Test supports_color returns False for dumb terminal."""
+        mock_stdout.isatty.return_value = True
+        mock_environ.get.side_effect = lambda key, default="": "dumb" if key == "TERM" else default
+
+        result = supports_color()
+        assert result is False
+
+    @patch("check_requirements_txt.sys.stdout")
+    @patch("check_requirements_txt.os.environ")
+    def test_supports_color_unknown_terminal(self, mock_environ, mock_stdout):
+        """Test supports_color returns False for unknown terminal."""
+        mock_stdout.isatty.return_value = True
+        mock_environ.get.side_effect = lambda key, default="": "unknown" if key == "TERM" else default
+
+        result = supports_color()
+        assert result is False
+
+    @patch("check_requirements_txt.supports_color")
+    def test_colorize_with_color_support(self, mock_supports_color):
+        """Test colorize adds ANSI codes when color is supported."""
+        mock_supports_color.return_value = True
+
+        result = colorize("test text", "91")
+        assert result == "\033[91mtest text\033[0m"
+
+    @patch("check_requirements_txt.supports_color")
+    def test_colorize_without_color_support(self, mock_supports_color):
+        """Test colorize returns plain text when color is not supported."""
+        mock_supports_color.return_value = False
+
+        result = colorize("test text", "91")
+        assert result == "test text"
+
+    @patch("check_requirements_txt.colorize")
+    def test_red_function(self, mock_colorize):
+        """Test red function calls colorize with correct color code."""
+        mock_colorize.return_value = "colored text"
+
+        result = red("test text")
+
+        mock_colorize.assert_called_once_with("test text", "91")
+        assert result == "colored text"
+
+    @patch("check_requirements_txt.colorize")
+    def test_yellow_function(self, mock_colorize):
+        """Test yellow function calls colorize with correct color code."""
+        mock_colorize.return_value = "colored text"
+
+        result = yellow("test text")
+
+        mock_colorize.assert_called_once_with("test text", "93")
+        assert result == "colored text"
+
+    def test_red_integration(self):
+        """Test red function integration with actual color support detection."""
+        result = red("error message")
+
+        # Result should either be colored or plain text depending on environment
+        assert "error message" in result
+        # If colored, should contain ANSI codes
+        if "\033[" in result:
+            assert result.startswith("\033[91m")
+            assert result.endswith("\033[0m")
+
+    def test_yellow_integration(self):
+        """Test yellow function integration with actual color support detection."""
+        result = yellow("warning message")
+
+        # Result should either be colored or plain text depending on environment
+        assert "warning message" in result
+        # If colored, should contain ANSI codes
+        if "\033[" in result:
+            assert result.startswith("\033[93m")
+            assert result.endswith("\033[0m")
 
 
 class TestGetImports:
@@ -492,6 +624,108 @@ class TestRunFunction:
 
         captured = capsys.readouterr()
         assert 'Bad import detected: "missing_module"' in captured.out
+        assert "requirements.txt" in captured.out
+
+    @patch("check_requirements_txt.stdlibs")
+    @patch("check_requirements_txt.load_req_modules")
+    @patch("check_requirements_txt.get_imports")
+    @patch("check_requirements_txt.supports_color")
+    @patch("check_requirements_txt.project_modules", set())
+    def test_run_missing_import_with_color(
+        self, mock_supports_color, mock_get_imports, mock_load_req, mock_stdlibs, tmp_path, capsys
+    ):
+        """Test run with missing import shows colored output when color is supported."""
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+
+        py_file = project_dir / "main.py"
+        py_file.write_text("import missing_module")
+
+        req_file = project_dir / "requirements.txt"
+        req_file.write_text("some_other_package")
+
+        # Mock functions
+        mock_stdlibs.return_value = ["sys", "os", "re"]
+        mock_load_req.return_value = {"some_other_package": {"some_other_package"}}
+        mock_get_imports.return_value = {"missing_module": {f"{py_file}:1"}}
+        mock_supports_color.return_value = True
+
+        return_code = run([str(project_dir), "--req-txt-path", str(req_file)])
+        assert return_code == 1
+
+        captured = capsys.readouterr()
+        # Should contain ANSI color codes for red text
+        assert "\033[91m" in captured.out  # Red color code
+        assert "\033[0m" in captured.out  # Reset color code
+        assert 'Bad import detected: "missing_module"' in captured.out
+        assert "requirements.txt" in captured.out
+
+    @patch("check_requirements_txt.stdlibs")
+    @patch("check_requirements_txt.load_req_modules")
+    @patch("check_requirements_txt.get_imports")
+    @patch("check_requirements_txt.supports_color")
+    @patch("check_requirements_txt.project_modules", set())
+    def test_run_missing_import_without_color(
+        self, mock_supports_color, mock_get_imports, mock_load_req, mock_stdlibs, tmp_path, capsys
+    ):
+        """Test run with missing import shows plain output when color is not supported."""
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+
+        py_file = project_dir / "main.py"
+        py_file.write_text("import missing_module")
+
+        req_file = project_dir / "requirements.txt"
+        req_file.write_text("some_other_package")
+
+        # Mock functions
+        mock_stdlibs.return_value = ["sys", "os", "re"]
+        mock_load_req.return_value = {"some_other_package": {"some_other_package"}}
+        mock_get_imports.return_value = {"missing_module": {f"{py_file}:1"}}
+        mock_supports_color.return_value = False
+
+        return_code = run([str(project_dir), "--req-txt-path", str(req_file)])
+        assert return_code == 1
+
+        captured = capsys.readouterr()
+        # Should NOT contain ANSI color codes
+        assert "\033[91m" not in captured.out  # No red color code
+        assert "\033[0m" not in captured.out  # No reset color code
+        assert 'Bad import detected: "missing_module"' in captured.out
+        assert "requirements.txt" in captured.out
+
+    @patch("check_requirements_txt.stdlibs")
+    @patch("check_requirements_txt.load_req_modules")
+    @patch("check_requirements_txt.get_imports")
+    @patch("check_requirements_txt.project_modules", set())
+    def test_run_missing_import_with_pyproject_toml(
+        self, mock_get_imports, mock_load_req, mock_stdlibs, tmp_path, capsys
+    ):
+        """Test run with missing import shows pyproject.toml in error message."""
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+
+        py_file = project_dir / "main.py"
+        py_file.write_text("import missing_module")
+
+        pyproject_file = project_dir / "pyproject.toml"
+        pyproject_file.write_text("""
+[project]
+name = "test-project"
+dependencies = ["some_other_package"]
+""")
+
+        # Mock functions
+        mock_stdlibs.return_value = ["sys", "os", "re"]
+        mock_load_req.return_value = {"some_other_package": {"some_other_package"}}
+        mock_get_imports.return_value = {"missing_module": {f"{py_file}:1"}}
+
+        return_code = run([str(project_dir), "--req-txt-path", str(pyproject_file)])
+        assert return_code == 1
+
+        captured = capsys.readouterr()
+        assert 'Bad import detected: "missing_module"' in captured.out
+        assert "pyproject.toml" in captured.out
 
     def test_run_allows_package_with_init_only(self, tmp_path):
         """A package defined solely by __init__.py should not trigger a missing import."""

@@ -4,6 +4,7 @@
 import argparse
 import importlib.metadata
 import locale
+import os
 import re
 import sys
 from collections import defaultdict
@@ -22,6 +23,44 @@ MODULE_FROM_P = re.compile(r"^\s*?from\s+(?P<module>[a-zA-Z0-9_]+).*?\simport")
 DROP_LINE_P = re.compile(r"^\w+:/+", re.I)
 
 project_modules = set()
+
+
+def supports_color() -> bool:
+    """Check if the terminal supports color output."""
+    # Check environment variables first
+    if os.environ.get("NO_COLOR"):
+        return False
+
+    if os.environ.get("FORCE_COLOR"):
+        return True
+
+    # Check if output is redirected
+    if not hasattr(sys.stdout, "isatty") or not sys.stdout.isatty():
+        return False
+
+    # Check TERM environment variable
+    term = os.environ.get("TERM", "") or ""
+    if term.lower() in ("dumb", "unknown"):
+        return False
+
+    return True
+
+
+def colorize(text: str, color_code: str) -> str:
+    """Add color to text if terminal supports it."""
+    if supports_color():
+        return f"\033[{color_code}m{text}\033[0m"
+    return text
+
+
+def red(text: str) -> str:
+    """Make text red if terminal supports color."""
+    return colorize(text, "91")
+
+
+def yellow(text: str) -> str:
+    """Make text yellow if terminal supports color."""
+    return colorize(text, "93")
 
 
 def stdlibs() -> list[str]:
@@ -381,9 +420,25 @@ def run(argv: Sequence[str] | None = None) -> int:
         )
         raise ValueError(msg)
 
+    # Track the types of config files being used
+    config_file_types = set()
     for path in args.req_paths:
+        path_obj = Path(path)
+        if path_obj.name.endswith((".toml", "pyproject.toml")):
+            config_file_types.add("pyproject.toml")
+        else:
+            config_file_types.add("requirements.txt")
+
         for module, value in load_req_modules(path).items():
             builtin_modules[module].update(value)
+
+    # Generate appropriate config file suggestion
+    if len(config_file_types) == 1:
+        config_suggestion = next(iter(config_file_types))
+    elif "pyproject.toml" in config_file_types:
+        config_suggestion = "pyproject.toml"
+    else:
+        config_suggestion = "requirements.txt"
 
     error_count = 0
     args.ignore.add("pip")
@@ -396,7 +451,7 @@ def run(argv: Sequence[str] | None = None) -> int:
             continue
         if module not in builtin_modules:
             print(
-                f'Bad import detected: "{module}", check your requirements.txt please.',
+                red(f'Bad import detected: "{module}", check your {config_suggestion} please.'),
             )
             for _path in paths:
                 print(_path)

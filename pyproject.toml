@@ -50,9 +50,15 @@ cov-report = [
   "- coverage combine",
   "coverage report",
 ]
+cov-xml = [
+  "test-cov",
+  "- coverage combine",
+  "coverage xml",
+]
 cov = [
   "test-cov",
   "cov-report",
+  "coverage xml",
 ]
 
 [[tool.hatch.envs.all.matrix]]

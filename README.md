@@ -6,6 +6,7 @@ A tool (and also a pre-commit hook) to automatically check the missing packages 
 [![PyPI - Python Version](https://img.shields.io/pypi/pyversions/check-requirements-txt.svg)](https://pypi.org/project/check-requirements-txt)
 [![CI](https://github.com/ferstar/check-requirements-txt/workflows/CI/badge.svg)](https://github.com/ferstar/check-requirements-txt/actions/workflows/ci.yml)
 [![Lint](https://github.com/ferstar/check-requirements-txt/workflows/Lint/badge.svg)](https://github.com/ferstar/check-requirements-txt/actions/workflows/lint.yml)
+[![codecov](https://codecov.io/gh/ferstar/check-requirements-txt/branch/master/graph/badge.svg)](https://codecov.io/gh/ferstar/check-requirements-txt)
 
 -----
 
@@ -145,7 +146,7 @@ $ echo $?
 
 # Missing dependency detected
 $ check-requirements-txt src/ -r pyproject.toml
-Bad import detected: "missing_package", check your requirements.txt please.
+Bad import detected: "missing_package", check your pyproject.toml please.
 /path/to/file.py:5
 $ echo $?
 1

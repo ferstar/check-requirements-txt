@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "check-requirements-txt"
 dynamic = ["version"]
-description = 'Check the missing packages in requirements.txt'
+description = "A tool (and also a pre-commit hook) to automatically check the missing packages in requirements.txt and pyproject.toml."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"

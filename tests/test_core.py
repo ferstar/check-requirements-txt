@@ -14,6 +14,7 @@ from check_requirements_txt import (
     param_as_set,
     parse_pyproject_toml,
     parse_requirements,
+    project_modules,
     run,
     stdlibs,
 )
@@ -261,6 +262,32 @@ class TestRunFunction:
 
         captured = capsys.readouterr()
         assert 'Bad import detected: "missing_module"' in captured.out
+
+    def test_run_allows_package_with_init_only(self, tmp_path):
+        """A package defined solely by __init__.py should not trigger a missing import."""
+        project_modules.clear()
+        try:
+            project_dir = tmp_path / "project"
+            project_dir.mkdir()
+
+            pkg_dir = project_dir / "mypkg"
+            pkg_dir.mkdir()
+            (pkg_dir / "__init__.py").write_text("value = 1\n")
+
+            py_file = project_dir / "main.py"
+            py_file.write_text("import mypkg\n")
+
+            req_file = project_dir / "requirements.txt"
+            req_file.write_text("")
+            original_cwd = os.getcwd()
+            os.chdir(project_dir)
+            try:
+                return_code = run([str(py_file), "-r", str(req_file)])
+            finally:
+                os.chdir(original_cwd)
+            assert return_code == 0
+        finally:
+            project_modules.clear()
 
     def test_run_no_requirements_file(self, tmp_path):
         """Test run when no requirements file is found."""

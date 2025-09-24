@@ -4,7 +4,6 @@
 import argparse
 import importlib.metadata
 import locale
-import os
 import re
 import sys
 from collections import defaultdict
@@ -312,12 +311,28 @@ def run(argv: Sequence[str] | None = None) -> int:
     if not project_dirs:
         project_dirs.append(Path().cwd())
 
-    project_modules.update(
-        os.path.splitext(p.as_posix().replace(project.as_posix(), "").lstrip("/"))[0].replace("/", ".")
-        for project in project_dirs
-        for p in project.glob("**/*.py")
-        if not p.name.startswith(".") and p.name != "__init__.py" and (os.path.isdir(p) or p.name.endswith(".py"))
-    )
+    project_module_candidates: set[str] = set()
+    for project in project_dirs:
+        for py_path in project.glob("**/*.py"):
+            if py_path.name.startswith("."):
+                continue
+
+            relative_path = py_path.relative_to(project)
+            if any(part.startswith(".") for part in relative_path.parts):
+                continue
+
+            if py_path.name == "__init__.py":
+                # Include package directories that only expose an __init__.py
+                if not relative_path.parent.parts:
+                    continue
+                module_name = ".".join(relative_path.parent.parts)
+            else:
+                module_name = ".".join(relative_path.with_suffix("").parts)
+
+            if module_name:
+                project_module_candidates.add(module_name)
+
+    project_modules.update(project_module_candidates)
     project_modules.update(m for p in project_modules.copy() for m in p.split("."))
 
     if not args.req_paths:

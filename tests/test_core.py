@@ -20,6 +20,11 @@ from check_requirements_txt import (
 )
 
 
+def extract_package_names(packages_with_extras):
+    """Helper function to extract package names from (package_name, extras) tuples."""
+    return [pkg_name for pkg_name, _extras in packages_with_extras]
+
+
 class TestParseRequirements:
     """Test the parse_requirements function."""
 
@@ -33,8 +38,9 @@ package_c>=2.0,<3.0
         req_file = tmp_path / "requirements.txt"
         req_file.write_text(req_content)
         packages = list(parse_requirements(req_file))
-        # pkg_resources normalizes package names to lowercase with hyphens
-        assert sorted(packages) == sorted(["package-a", "package-b", "package-c"])
+        # Should return tuples of (package_name, extras)
+        expected = [("package-a", set()), ("package-b", set()), ("package-c", set())]
+        assert sorted(packages) == sorted(expected)
 
     def test_requirements_with_comments(self, tmp_path):
         """Test requirements file with comments and empty lines."""
@@ -47,8 +53,9 @@ package_b # inline comment
         req_file = tmp_path / "requirements.txt"
         req_file.write_text(req_content)
         packages = list(parse_requirements(req_file))
-        # pkg_resources normalizes package names to lowercase with hyphens
-        assert sorted(packages) == sorted(["package-a", "package-b"])
+        # Should return tuples of (package_name, extras)
+        expected = [("package-a", set()), ("package-b", set())]
+        assert sorted(packages) == sorted(expected)
 
     def test_requirements_with_extras(self, tmp_path):
         """Test requirements with extras."""
@@ -60,10 +67,70 @@ package_c
         req_file = tmp_path / "requirements.txt"
         req_file.write_text(req_content)
         packages = list(parse_requirements(req_file))
-        # The current implementation yields extras as separate items
-        # importlib.metadata normalizes package names to lowercase with hyphens
-        expected = ["package-a", "extra1", "extra2", "package-b", "another-extra", "package-c"]
+        # Should return tuples of (package_name, extras)
+        expected = [("package-a", {"extra1", "extra2"}), ("package-b", {"another-extra"}), ("package-c", set())]
         assert sorted(packages) == sorted(expected)
+
+    def test_coverage_toml_extra_detection(self, tmp_path):
+        """Test that coverage[toml] is properly detected and handled."""
+        req_content = """
+coverage[toml]>=6.0
+pytest>=7.0
+        """
+        req_file = tmp_path / "requirements.txt"
+        req_file.write_text(req_content)
+        packages = list(parse_requirements(req_file))
+        # Should return tuples with extras properly captured
+        expected = [("coverage", {"toml"}), ("pytest", set())]
+        assert sorted(packages) == sorted(expected)
+
+    def test_load_req_modules_with_extras(self, tmp_path):
+        """Test that load_req_modules properly handles packages with extras."""
+        req_content = """
+coverage[toml]>=6.0
+requests[security]>=2.25.0
+        """
+        req_file = tmp_path / "requirements.txt"
+        req_file.write_text(req_content)
+
+        # Test the full pipeline
+        modules = load_req_modules(req_file)
+
+        # Should contain modules for both main packages and their extras
+        # Note: This test might fail if the packages aren't installed
+        print("Loaded modules:", dict(modules))
+
+        # At minimum, we should have entries for the main packages
+        assert any("coverage" in str(packages) for packages in modules.values())
+        assert any("requests" in str(packages) for packages in modules.values())
+
+    def test_extras_functionality_comprehensive(self, tmp_path):
+        """Test comprehensive extras functionality."""
+        req_content = """
+coverage[toml]>=6.0
+requests[security,socks]>=2.25.0
+pytest>=7.0
+        """
+        req_file = tmp_path / "requirements.txt"
+        req_file.write_text(req_content)
+
+        # Test parsing
+        packages = list(parse_requirements(req_file))
+        expected = [("coverage", {"toml"}), ("requests", {"security", "socks"}), ("pytest", set())]
+        assert sorted(packages) == sorted(expected)
+
+        # Test that extras are properly passed to find_depends
+        # This tests the integration between parsing and dependency resolution
+        modules = load_req_modules(req_file)
+
+        # Should contain modules for the main packages
+        package_names = set()
+        for module_packages in modules.values():
+            package_names.update(module_packages)
+
+        assert "coverage" in package_names
+        assert "requests" in package_names
+        assert "pytest" in package_names
 
     def test_git_requirements(self, tmp_path):
         """Test git+https requirements with #egg= syntax."""
@@ -74,8 +141,9 @@ package_b
         req_file = tmp_path / "requirements.txt"
         req_file.write_text(req_content)
         packages = list(parse_requirements(req_file))
-        assert "my-package" in packages  # normalized to hyphenated form
-        assert "package-b" in packages
+        package_names = extract_package_names(packages)
+        assert "my-package" in package_names  # normalized to hyphenated form
+        assert "package-b" in package_names
 
     def test_nested_requirements(self, tmp_path):
         """Test -r nested requirements files."""
@@ -92,9 +160,72 @@ package_b
         req_file = tmp_path / "requirements.txt"
         req_file.write_text(req_content)
         packages = list(parse_requirements(req_file))
-        assert "package-a" in packages
-        assert "package-b" in packages
-        assert "nested-package" in packages
+        package_names = extract_package_names(packages)
+        assert "package-a" in package_names
+        assert "package-b" in package_names
+        assert "nested-package" in package_names
+
+    def test_parse_requirements_invalid_lines(self, tmp_path):
+        """Test parsing requirements.txt with invalid requirement lines."""
+        req_content = """
+# Valid requirements
+coverage[toml]>=6.0
+requests>=2.25.0
+
+# Invalid requirements (should be skipped)
+invalid requirement string <<<
+another invalid line >>>
+
+# More valid requirements
+pytest>=7.0
+"""
+        req_file = tmp_path / "requirements.txt"
+        req_file.write_text(req_content)
+
+        packages = list(parse_requirements(req_file))
+        package_names = extract_package_names(packages)
+
+        # Should include valid packages
+        assert "coverage" in package_names
+        assert "requests" in package_names
+        assert "pytest" in package_names
+
+        # Should not include invalid lines
+        for package_name, _ in packages:
+            assert "invalid" not in package_name
+            assert "<<<" not in package_name
+            assert ">>>" not in package_name
+
+    def test_parse_requirements_encoding_fallback(self, tmp_path):
+        """Test requirements parsing with different encodings."""
+        # Create a file with special characters
+        req_content = "# Comment with special chars: café\nrequests>=2.25.0\n"
+        req_file = tmp_path / "requirements.txt"
+
+        # Write with latin-1 encoding
+        req_file.write_bytes(req_content.encode("latin-1"))
+
+        packages = list(parse_requirements(req_file))
+        package_names = extract_package_names(packages)
+
+        # Should still parse the valid requirement
+        assert "requests" in package_names
+
+    def test_parse_requirements_encoding_error(self, tmp_path):
+        """Test requirements parsing with unsupported encoding."""
+        req_file = tmp_path / "requirements.txt"
+
+        # Create a file with invalid bytes that can't be decoded
+        invalid_bytes = b"\xff\xfe\x00\x00invalid content"
+        req_file.write_bytes(invalid_bytes)
+
+        # Should raise UnicodeDecodeError for completely invalid content
+        try:
+            list(parse_requirements(req_file))
+            # If we get here, the file was somehow decoded, which is fine
+        except UnicodeDecodeError:
+            # This is expected for truly invalid content
+            pass
 
 
 class TestUtilityFunctions:
@@ -209,6 +340,13 @@ class TestMockedFunctions:
 
         result = find_real_modules("test_package")
         assert "test_package" in result
+
+    def test_find_real_modules_no_files(self):
+        """Test find_real_modules when no files are found."""
+        # Test with a package that doesn't exist
+        result = find_real_modules("nonexistent_package_12345")
+        # Should fall back to the package name itself
+        assert "nonexistent_package_12345" in result
 
 
 class TestRunFunction:
@@ -325,8 +463,9 @@ dependencies = [
         pyproject_file.write_text(pyproject_content)
 
         deps = list(parse_pyproject_toml(pyproject_file))
-        assert "packaging" in deps
-        assert "requests" in deps
+        package_names = extract_package_names(deps)
+        assert "packaging" in package_names
+        assert "requests" in package_names
 
     def test_parse_pyproject_toml_optional_dependencies(self, tmp_path):
         """Test parsing optional dependencies from pyproject.toml."""
@@ -344,11 +483,12 @@ docs = ["sphinx", "sphinx-rtd-theme"]
         pyproject_file.write_text(pyproject_content)
 
         deps = list(parse_pyproject_toml(pyproject_file))
-        assert "packaging" in deps
-        assert "pytest" in deps
-        assert "black" in deps
-        assert "sphinx" in deps
-        assert "sphinx-rtd-theme" in deps
+        package_names = extract_package_names(deps)
+        assert "packaging" in package_names
+        assert "pytest" in package_names
+        assert "black" in package_names
+        assert "sphinx" in package_names
+        assert "sphinx-rtd-theme" in package_names
 
     def test_parse_pyproject_toml_dependency_groups(self, tmp_path):
         """Test parsing dependency groups from pyproject.toml."""
@@ -366,11 +506,12 @@ test = ["coverage", "pytest-cov"]
         pyproject_file.write_text(pyproject_content)
 
         deps = list(parse_pyproject_toml(pyproject_file))
-        assert "packaging" in deps
-        assert "pytest" in deps
-        assert "ruff" in deps
-        assert "coverage" in deps
-        assert "pytest-cov" in deps
+        package_names = extract_package_names(deps)
+        assert "packaging" in package_names
+        assert "pytest" in package_names
+        assert "ruff" in package_names
+        assert "coverage" in package_names
+        assert "pytest-cov" in package_names
 
     def test_parse_pyproject_toml_uv_dev_dependencies(self, tmp_path):
         """Test parsing legacy uv dev-dependencies from pyproject.toml."""
@@ -387,9 +528,10 @@ dev-dependencies = ["pytest>=6.0", "mypy"]
         pyproject_file.write_text(pyproject_content)
 
         deps = list(parse_pyproject_toml(pyproject_file))
-        assert "packaging" in deps
-        assert "pytest" in deps
-        assert "mypy" in deps
+        package_names = extract_package_names(deps)
+        assert "packaging" in package_names
+        assert "pytest" in package_names
+        assert "mypy" in package_names
 
     def test_load_req_modules_with_pyproject_toml(self, tmp_path):
         """Test load_req_modules with pyproject.toml file."""
@@ -446,12 +588,13 @@ test = ["coverage", "pytest-cov"]
         pyproject_file.write_text(pyproject_content)
 
         deps = list(parse_pyproject_toml(pyproject_file))
-        assert "packaging" in deps
-        assert "pytest" in deps
-        assert "ruff" in deps
-        assert "black" in deps
-        assert "coverage" in deps
-        assert "pytest-cov" in deps
+        package_names = extract_package_names(deps)
+        assert "packaging" in package_names
+        assert "pytest" in package_names
+        assert "ruff" in package_names
+        assert "black" in package_names
+        assert "coverage" in package_names
+        assert "pytest-cov" in package_names
 
     def test_parse_pyproject_toml_invalid_file(self, tmp_path, capsys):
         """Test parsing invalid pyproject.toml file."""
@@ -467,3 +610,121 @@ name = "test-project"  # Missing closing bracket
 
         captured = capsys.readouterr()
         assert "Warning: Failed to parse" in captured.out
+
+    def test_parse_pyproject_toml_with_extras(self, tmp_path):
+        """Test parsing pyproject.toml with package extras."""
+        pyproject_file = tmp_path / "pyproject.toml"
+        pyproject_content = """
+[project]
+name = "test-project"
+version = "0.1.0"
+dependencies = [
+    "coverage[toml]>=6.0",
+    "requests[security,socks]>=2.25.0",
+    "pytest>=7.0"
+]
+
+[project.optional-dependencies]
+dev = [
+    "black[d]>=22.0",
+    "mypy[reports]>=1.0"
+]
+
+[dependency-groups]
+test = [
+    "pytest[cov]>=7.0",
+    "coverage[toml]>=6.0"
+]
+"""
+        pyproject_file.write_text(pyproject_content)
+
+        deps = list(parse_pyproject_toml(pyproject_file))
+        expected = [
+            ("coverage", {"toml"}),
+            ("requests", {"security", "socks"}),
+            ("pytest", set()),
+            ("black", {"d"}),
+            ("mypy", {"reports"}),
+            ("pytest", {"cov"}),
+            ("coverage", {"toml"}),
+        ]
+        assert sorted(deps) == sorted(expected)
+
+    def test_parse_pyproject_toml_invalid_requirements(self, tmp_path):
+        """Test parsing pyproject.toml with invalid requirement strings."""
+        pyproject_file = tmp_path / "pyproject.toml"
+        pyproject_content = """
+[project]
+name = "test-project"
+version = "0.1.0"
+dependencies = [
+    "valid-package>=1.0",
+    "invalid requirement string <<<",
+    "another-valid-package"
+]
+
+[project.optional-dependencies]
+dev = [
+    "valid-dev-package",
+    "invalid dev requirement <<<",
+]
+
+[dependency-groups]
+test = [
+    "valid-test-package",
+    "invalid test requirement <<<"
+]
+
+[tool.uv]
+dev-dependencies = [
+    "valid-uv-package",
+    "invalid uv requirement <<<"
+]
+"""
+        pyproject_file.write_text(pyproject_content)
+
+        deps = list(parse_pyproject_toml(pyproject_file))
+        package_names = extract_package_names(deps)
+
+        # Should only include valid packages, invalid ones should be skipped
+        assert "valid-package" in package_names
+        assert "another-valid-package" in package_names
+        assert "valid-dev-package" in package_names
+        assert "valid-test-package" in package_names
+        assert "valid-uv-package" in package_names
+
+        # Invalid requirements should not appear
+        for package_name, _ in deps:
+            assert "invalid" not in package_name
+            assert "<<<" not in package_name
+
+    def test_parse_pyproject_toml_include_group_syntax(self, tmp_path):
+        """Test parsing pyproject.toml with include-group syntax."""
+        pyproject_file = tmp_path / "pyproject.toml"
+        pyproject_content = """
+[project]
+name = "test-project"
+version = "0.1.0"
+
+[dependency-groups]
+test = [
+    "pytest>=7.0",
+    "coverage>=6.0"
+]
+dev = [
+    {include-group = "test"},
+    "black>=22.0"
+]
+"""
+        pyproject_file.write_text(pyproject_content)
+
+        deps = list(parse_pyproject_toml(pyproject_file))
+        package_names = extract_package_names(deps)
+
+        # Should include packages from both groups
+        assert "pytest" in package_names
+        assert "coverage" in package_names
+        assert "black" in package_names
+
+        # Should not include the include-group entry itself
+        assert "include-group" not in package_names

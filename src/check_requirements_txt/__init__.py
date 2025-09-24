@@ -28,7 +28,16 @@ def stdlibs() -> list[str]:
     return list(set(list(sys.stdlib_module_names) + list(sys.builtin_module_names)))
 
 
-def find_depends(package_name: str) -> list[str]:
+def find_depends(package_name: str, extras: set[str] | None = None) -> list[str]:
+    """Find all dependencies for a package, optionally including extras.
+
+    Args:
+        package_name: The name of the package
+        extras: Optional set of extras to include when resolving dependencies
+
+    Returns:
+        List of all required package names
+    """
     requires = set()
     to_process = {package_name}
     processed = set()
@@ -55,8 +64,22 @@ def find_depends(package_name: str) -> list[str]:
             for req_str in dist.requires:
                 req = Requirement(req_str)
                 # Skip requirements with markers that don't evaluate to True
-                if req.marker and not req.marker.evaluate():
-                    continue
+                if req.marker:
+                    if extras:
+                        # For each extra, check if this requirement should be included
+                        should_include = False
+                        for extra in extras:
+                            env_with_extra = {"extra": extra}
+                            if req.marker.evaluate(env_with_extra):
+                                should_include = True
+                                break
+                        if not should_include:
+                            # Also check if it evaluates to True without any extra
+                            if not req.marker.evaluate({}):
+                                continue
+                    # No extras specified, evaluate with empty environment
+                    elif not req.marker.evaluate({}):
+                        continue
                 to_process.add(req.name)
     return list(requires)
 
@@ -108,7 +131,7 @@ def find_real_modules(package_name: str) -> list[str]:
     return list(modules)
 
 
-def parse_pyproject_toml(path: Path) -> Iterable[str]:
+def parse_pyproject_toml(path: Path) -> Iterable[tuple[str, set[str]]]:
     """Parse dependencies from pyproject.toml file.
 
     Supports:
@@ -130,7 +153,9 @@ def parse_pyproject_toml(path: Path) -> Iterable[str]:
     for dep in dependencies:
         try:
             req = Requirement(dep)
-            yield req.name.lower().replace("_", "-")
+            package_name = req.name.lower().replace("_", "-")
+            extras = {extra.lower().replace("_", "-") for extra in req.extras}
+            yield (package_name, extras)
         except ValueError:
             # Invalid requirement, skip
             continue
@@ -141,7 +166,9 @@ def parse_pyproject_toml(path: Path) -> Iterable[str]:
         for dep in deps:
             try:
                 req = Requirement(dep)
-                yield req.name.lower().replace("_", "-")
+                package_name = req.name.lower().replace("_", "-")
+                extras = {extra.lower().replace("_", "-") for extra in req.extras}
+                yield (package_name, extras)
             except ValueError:
                 continue
 
@@ -156,7 +183,9 @@ def parse_pyproject_toml(path: Path) -> Iterable[str]:
             if isinstance(dep, str):
                 try:
                     req = Requirement(dep)
-                    yield req.name.lower().replace("_", "-")
+                    package_name = req.name.lower().replace("_", "-")
+                    extras = {extra.lower().replace("_", "-") for extra in req.extras}
+                    yield (package_name, extras)
                 except ValueError:
                     continue
 
@@ -166,12 +195,15 @@ def parse_pyproject_toml(path: Path) -> Iterable[str]:
     for dep in dev_deps:
         try:
             req = Requirement(dep)
-            yield req.name.lower().replace("_", "-")
+            package_name = req.name.lower().replace("_", "-")
+            extras = {extra.lower().replace("_", "-") for extra in req.extras}
+            yield (package_name, extras)
         except ValueError:
             continue
 
 
-def parse_requirements(path: Path) -> Iterable[str]:
+def parse_requirements(path: Path) -> Iterable[tuple[str, set[str]]]:
+    """Parse requirements file and return tuples of (package_name, extras)."""
     system_encoding = locale.getpreferredencoding()
     supported_encodings = ["utf-8", "ISO-8859-1", "utf-16"]
 
@@ -196,7 +228,8 @@ def parse_requirements(path: Path) -> Iterable[str]:
                     if line.startswith("-") or DROP_LINE_P.search(line):
                         continue
                     if line.startswith("git+https") and "#egg=" in line:
-                        yield line.rsplit("#egg=", maxsplit=1)[-1].strip().lower().replace("_", "-")
+                        package_name = line.rsplit("#egg=", maxsplit=1)[-1].strip().lower().replace("_", "-")
+                        yield (package_name, set())
                         continue
 
                     # Remove inline comments
@@ -206,14 +239,9 @@ def parse_requirements(path: Path) -> Iterable[str]:
 
                     try:
                         req = Requirement(clean_line)
-                        yield req.name.lower().replace("_", "-")  # Normalize to lowercase and hyphenated
-                        for ext in req.extras:
-                            # Extras are usually part of the package name for lookup purposes
-                            # e.g., package[extra] should make 'package' and 'extra' discoverable
-                            # However, the original code yielded extras separately.
-                            # For now, let's assume extras might be sub-packages or related packages
-                            # This behavior might need refinement based on actual usage.
-                            yield ext.lower().replace("_", "-")
+                        package_name = req.name.lower().replace("_", "-")  # Normalize to lowercase and hyphenated
+                        extras = {extra.lower().replace("_", "-") for extra in req.extras}
+                        yield (package_name, extras)
                     except ValueError:  # Catches RequirementParseError from packaging.requirements
                         # Invalid requirement line, skip
                         continue
@@ -240,12 +268,12 @@ def load_req_modules(req_path: Path | str) -> dict[str, set[str]]:
     else:
         parser = parse_requirements
 
-    for package in parser(req_path):
-        for module in find_real_modules(package):
-            modules[module].add(package)
-        for pack in find_depends(package):
+    for package_name, extras in parser(req_path):
+        for module in find_real_modules(package_name):
+            modules[module].add(package_name)
+        for pack in find_depends(package_name, extras):
             for mod in find_real_modules(pack):
-                modules[mod].add(package)
+                modules[mod].add(package_name)
     return modules
 
 

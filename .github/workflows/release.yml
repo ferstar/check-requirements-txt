@@ -26,6 +26,11 @@ jobs:
     - name: Install hatch
       run: pip install hatch
 
+    - name: Install dependencies
+      run: |
+        hatch env create default
+        hatch env create lint
+
     - name: Run tests
       run: hatch run test
 

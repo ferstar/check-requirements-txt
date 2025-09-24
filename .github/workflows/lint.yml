@@ -35,6 +35,11 @@ jobs:
     - name: Install hatch
       run: pip install hatch
 
+    - name: Install project dependencies
+      run: |
+        hatch env create default
+        hatch env create lint
+
     - name: Run ruff check
       run: hatch run lint:style
 

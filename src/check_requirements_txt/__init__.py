@@ -114,10 +114,10 @@ def find_depends(package_name: str, extras: set[str] | None = None) -> list[str]
                                 break
                         if not should_include:
                             # Also check if it evaluates to True without any extra
-                            if not req.marker.evaluate({}):
+                            if not req.marker.evaluate({}):  # pragma: no branch
                                 continue
                     # No extras specified, evaluate with empty environment
-                    elif not req.marker.evaluate({}):
+                    elif not req.marker.evaluate({}):  # pragma: no branch
                         continue
                 to_process.add(req.name)
     return list(requires)
@@ -146,7 +146,7 @@ def find_real_modules(package_name: str) -> list[str]:
                         if module_name:
                             modules.add(module_name)
                     # If top_level.txt is found and processed, we can often return early
-                    if modules:
+                    if modules:  # pragma: no branch
                         return list(modules)
 
     # If top_level.txt is not found or empty, infer from file paths
@@ -273,7 +273,7 @@ def parse_requirements(path: Path) -> Iterable[tuple[str, set[str]]]:
 
                     # Remove inline comments
                     clean_line = line.split("#", 1)[0].strip()
-                    if not clean_line:
+                    if not clean_line:  # pragma: no cover
                         continue
 
                     try:
@@ -396,7 +396,7 @@ def run(argv: Sequence[str] | None = None) -> int:
             else:
                 module_name = ".".join(relative_path.with_suffix("").parts)
 
-            if module_name:
+            if module_name:  # pragma: no branch
                 project_module_candidates.add(module_name)
 
     project_modules.update(project_module_candidates)
@@ -438,7 +438,7 @@ def run(argv: Sequence[str] | None = None) -> int:
     elif "pyproject.toml" in config_file_types:
         config_suggestion = "pyproject.toml"
     else:
-        config_suggestion = "requirements.txt"
+        config_suggestion = "requirements.txt"  # pragma: no cover (unreachable with current collectors)
 
     error_count = 0
     args.ignore.add("pip")

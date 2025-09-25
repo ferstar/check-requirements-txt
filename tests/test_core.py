@@ -1,7 +1,13 @@
 # SPDX-FileCopyrightText: 2023-present ferstar <zhangjianfei3@gmail.com>
 #
 # SPDX-License-Identifier: MIT
+import importlib
+import importlib.metadata as importlib_metadata
+import locale
 import os
+import sys
+from pathlib import Path
+from types import ModuleType
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -12,6 +18,7 @@ from check_requirements_txt import (
     find_real_modules,
     get_imports,
     load_req_modules,
+    main,
     param_as_set,
     parse_pyproject_toml,
     parse_requirements,
@@ -27,6 +34,37 @@ from check_requirements_txt import (
 def extract_package_names(packages_with_extras):
     """Helper function to extract package names from (package_name, extras) tuples."""
     return [pkg_name for pkg_name, _extras in packages_with_extras]
+
+
+class TestModuleImportBehavior:
+    """Exercise module import fallback paths."""
+
+    def test_tomllib_fallback_uses_tomli(self, monkeypatch):
+        """Simulate ImportError for tomllib and ensure tomli fallback is used."""
+        dummy_tomli = ModuleType("tomli")
+        monkeypatch.setitem(sys.modules, "tomli", dummy_tomli)
+
+        def remove_module(name: str) -> None:
+            monkeypatch.setitem(sys.modules, name, None)
+            monkeypatch.delitem(sys.modules, name, raising=False)
+
+        remove_module("check_requirements_txt")
+
+        original_import = __import__
+
+        def fake_import(name, globalns=None, localns=None, fromlist=(), level=0):
+            if name == "tomllib":
+                message = "tomllib not available"
+                raise ImportError(message)
+            return original_import(name, globalns, localns, fromlist, level)
+
+        with patch("builtins.__import__", side_effect=fake_import):
+            module = importlib.import_module("check_requirements_txt")
+
+        assert module.tomllib is dummy_tomli
+
+        monkeypatch.delitem(sys.modules, "tomli", raising=False)
+        importlib.reload(module)
 
 
 class TestParseRequirements:
@@ -149,6 +187,87 @@ package_b
         assert "package-b" in package_names
         assert "nested-package" in package_names
 
+    def test_nested_requirements_relative_path(self, tmp_path):
+        """Test that relative nested requirement paths are resolved."""
+        nested_req = tmp_path / "nested.txt"
+        nested_req.write_text("nested_package")
+
+        req_file = tmp_path / "requirements.txt"
+        req_file.write_text("""
+-r nested.txt
+package_a
+        """)
+
+        packages = list(parse_requirements(req_file))
+        package_names = extract_package_names(packages)
+        assert "nested-package" in package_names
+        assert "package-a" in package_names
+
+    def test_parse_requirements_skips_option_lines(self, tmp_path):
+        """Ensure option-style requirement lines are ignored."""
+        req_file = tmp_path / "requirements.txt"
+        req_file.write_text("""
+--find-links https://example.com
+package_a
+        """)
+
+        packages = list(parse_requirements(req_file))
+        package_names = extract_package_names(packages)
+        assert "package-a" in package_names
+        assert all(not name.startswith("--") for name in package_names)
+
+    def test_parse_requirements_adds_system_encoding(self, tmp_path, monkeypatch):
+        """Ensure system encoding is inserted when not already listed."""
+        monkeypatch.setattr(locale, "getpreferredencoding", lambda: "cp1252")
+
+        req_file = tmp_path / "requirements.txt"
+        req_file.write_text("package_a\n")
+
+        packages = list(parse_requirements(req_file))
+        assert extract_package_names(packages) == ["package-a"]
+
+    def test_parse_requirements_existing_system_encoding(self, tmp_path, monkeypatch):
+        """System encoding already present should not modify supported encodings."""
+        monkeypatch.setattr(locale, "getpreferredencoding", lambda: "utf-8")
+
+        req_file = tmp_path / "requirements.txt"
+        req_file.write_text("package_a\n")
+
+        packages = list(parse_requirements(req_file))
+        assert extract_package_names(packages) == ["package-a"]
+
+    def test_parse_requirements_all_encodings_fail(self, tmp_path, monkeypatch):
+        """Ensure an informative UnicodeDecodeError is raised when decoding fails."""
+        req_file = tmp_path / "requirements.txt"
+        req_file.write_text("package_a")
+
+        def broken_open(*_args, **_kwargs):
+            encoding = "broken"
+            error_message = "boom"
+            raise UnicodeDecodeError(encoding, b"", 0, 1, error_message)
+
+        monkeypatch.setattr("builtins.open", broken_open)
+
+        with pytest.raises(UnicodeDecodeError) as exc_info:
+            list(parse_requirements(req_file))
+
+        assert "Failed to decode" in str(exc_info.value)
+
+    def test_parse_requirements_propagates_unexpected_error(self, tmp_path, monkeypatch):
+        """Unexpected exceptions while reading should be propagated."""
+        req_file = tmp_path / "requirements.txt"
+
+        class UnexpectedError(Exception):
+            pass
+
+        def broken_open(*_args, **_kwargs):
+            raise UnexpectedError
+
+        monkeypatch.setattr("builtins.open", broken_open)
+
+        with pytest.raises(UnexpectedError):
+            list(parse_requirements(req_file))
+
     def test_parse_requirements_invalid_lines(self, tmp_path):
         """Test parsing requirements.txt with invalid requirement lines."""
         req_content = """
@@ -191,17 +310,12 @@ pytest>=7.0
         package_names = extract_package_names(packages)
         assert "requests" in package_names
 
-        # Test 2: Invalid bytes that can't be decoded
+        # Test 2: Invalid bytes that can't be decoded should not crash
         invalid_file = tmp_path / "requirements_invalid.txt"
         invalid_bytes = b"\xff\xfe\x00\x00invalid content"
         invalid_file.write_bytes(invalid_bytes)
 
-        # Should handle encoding errors gracefully
-        try:
-            list(parse_requirements(invalid_file))
-        except UnicodeDecodeError:
-            # This is expected for truly invalid content
-            pass
+        list(parse_requirements(invalid_file))
 
 
 class TestUtilityFunctions:
@@ -307,27 +421,19 @@ class TestColorFunctions:
         result = colorize("test text", "91")
         assert result == "test text"
 
-    def test_red_integration(self):
-        """Test red function integration with actual color support detection."""
+    @patch("check_requirements_txt.supports_color", return_value=True)
+    def test_red_integration(self, _supports_color):
+        """Test red adds ANSI codes when color is supported."""
         result = red("error message")
-
-        # Result should either be colored or plain text depending on environment
+        assert result.startswith("\033[91m")
+        assert result.endswith("\033[0m")
         assert "error message" in result
-        # If colored, should contain ANSI codes
-        if "\033[" in result:
-            assert result.startswith("\033[91m")
-            assert result.endswith("\033[0m")
 
-    def test_yellow_integration(self):
-        """Test yellow function integration with actual color support detection."""
+    @patch("check_requirements_txt.supports_color", return_value=False)
+    def test_yellow_integration(self, _supports_color):
+        """Test yellow returns plain text when color is not supported."""
         result = yellow("warning message")
-
-        # Result should either be colored or plain text depending on environment
-        assert "warning message" in result
-        # If colored, should contain ANSI codes
-        if "\033[" in result:
-            assert result.startswith("\033[93m")
-            assert result.endswith("\033[0m")
+        assert result == "warning message"
 
 
 class TestGetImports:
@@ -414,6 +520,137 @@ class TestMockedFunctions:
         assert "test_package" in result
 
     @patch("check_requirements_txt.importlib.metadata.distribution")
+    def test_find_depends_handles_marker_extras_and_cycles(self, mock_distribution):
+        """Ensure find_depends handles extras markers and avoids infinite loops."""
+
+        class FakeDist:
+            def __init__(self, name, requires):
+                self.metadata = {"Name": name}
+                self.requires = requires
+                self.files = None
+
+        def factory(package_name):
+            if package_name == "root-package":
+                return FakeDist("root-package", ['dep; extra == "feature"'])
+            if package_name == "dep":
+                return FakeDist("dep", ['root-package; extra == "feature"'])
+            raise importlib_metadata.PackageNotFoundError(package_name)
+
+        with pytest.raises(importlib_metadata.PackageNotFoundError):
+            factory("missing")
+
+        mock_distribution.side_effect = factory
+
+        result = find_depends("root-package", {"feature"})
+        assert set(result) == {"root-package", "dep"}
+
+    @patch("check_requirements_txt.importlib.metadata.distribution")
+    def test_find_depends_marker_branch_coverage(self, mock_distribution):
+        """Cover marker evaluation fallbacks with extras and without extras."""
+
+        class FakeDist:
+            def __init__(self, name, requires):
+                self.metadata = {"Name": name}
+                self.requires = requires
+                self.files = None
+
+        def factory(name: str):
+            if name == "branch-root":
+                return FakeDist(
+                    "branch-root",
+                    [
+                        'extra-match; extra == "feature"',
+                        'extra-fallback; extra == "other" or python_version >= "3"',
+                        'no-extra-keep; python_version < "4"',
+                        'no-extra-skip; python_version < "3"',
+                    ],
+                )
+            if name in {"extra-match", "extra-fallback", "no-extra-keep"}:
+                return FakeDist(name, [])
+            raise importlib_metadata.PackageNotFoundError(name)
+
+        with pytest.raises(importlib_metadata.PackageNotFoundError):
+            factory("unknown")
+
+        mock_distribution.side_effect = factory
+
+        result = find_depends("branch-root", {"feature"})
+
+        assert "extra-match" in result
+        assert "extra-fallback" in result
+        assert "no-extra-keep" in result
+        assert "no-extra-skip" not in result
+
+    @patch("check_requirements_txt.importlib.metadata.distribution")
+    def test_find_depends_marker_no_extras_branch(self, mock_distribution):
+        """Exercise marker evaluation when no extras are provided."""
+
+        class FakeDist:
+            def __init__(self, name, requires):
+                self.metadata = {"Name": name}
+                self.requires = requires
+                self.files = None
+
+        def factory(name: str):
+            if name == "root-noextras":
+                return FakeDist(
+                    "root-noextras",
+                    [
+                        'keep-me; python_version < "4"',
+                        'skip-me; python_version < "3"',
+                    ],
+                )
+            if name == "keep-me":
+                return FakeDist("keep-me", [])
+            raise importlib_metadata.PackageNotFoundError(name)
+
+        with pytest.raises(importlib_metadata.PackageNotFoundError):
+            factory("unknown")
+
+        mock_distribution.side_effect = factory
+
+        result = find_depends("root-noextras")
+
+        assert "keep-me" in result
+        assert "skip-me" not in result
+
+    @patch("check_requirements_txt.importlib.metadata.distribution")
+    def test_find_depends_skips_non_matching_extras(self, mock_distribution):
+        """Requirements guarded by unmatched extras markers should be ignored."""
+
+        class FakeDist:
+            def __init__(self, name, requires):
+                self.metadata = {"Name": name}
+                self.requires = requires
+                self.files = None
+
+        def requires_extra(package_name: str):
+            if package_name == "feature-root":
+                return FakeDist("feature-root", ['dep-one; extra == "feature"'])
+            raise importlib_metadata.PackageNotFoundError(package_name)
+
+        with pytest.raises(importlib_metadata.PackageNotFoundError):
+            requires_extra("other")
+
+        mock_distribution.side_effect = requires_extra
+
+        result = find_depends("feature-root", None)
+        assert result == ["feature-root"]
+
+        def requires_other_extra(package_name: str):
+            if package_name == "feature-root":
+                return FakeDist("feature-root", ['dep-two; extra == "other"'])
+            raise importlib_metadata.PackageNotFoundError(package_name)
+
+        with pytest.raises(importlib_metadata.PackageNotFoundError):
+            requires_other_extra("other")
+
+        mock_distribution.side_effect = requires_other_extra
+
+        result = find_depends("feature-root", {"feature"})
+        assert result == ["feature-root"]
+
+    @patch("check_requirements_txt.importlib.metadata.distribution")
     def test_find_real_modules_basic(self, mock_distribution):
         """Test find_real_modules with mocked importlib.metadata."""
         # Mock distribution object
@@ -430,6 +667,99 @@ class TestMockedFunctions:
         result = find_real_modules("nonexistent_package_12345")
         # Should fall back to the package name itself
         assert "nonexistent_package_12345" in result
+
+    @patch("check_requirements_txt.importlib.metadata.distribution")
+    def test_find_real_modules_path_inference_variants(self, mock_distribution):
+        """Find modules from standalone files and __init__ sentinels."""
+
+        class FakePath:
+            def __init__(self, path):
+                self._path = path
+                self.name = path.split("/")[-1]
+
+            def __str__(self):
+                return self._path
+
+        class FakeDist:
+            def __init__(self):
+                self.files = [FakePath("module.py"), FakePath("pkg/__init__.pyi")]
+
+        mock_distribution.return_value = FakeDist()
+
+        result = find_real_modules("example-package")
+        assert "module" in result
+        assert "pkg" in result
+
+    @patch("check_requirements_txt.importlib.metadata.distribution")
+    def test_find_real_modules_top_level_file(self, mock_distribution):
+        """Handle top_level.txt metadata when present."""
+
+        class FakePath:
+            def __init__(self, name):
+                self.name = name
+
+        class FakeDist:
+            def __init__(self) -> None:
+                self.files = [FakePath("top_level.txt")]
+
+            @staticmethod
+            def read_text(_name: str) -> str:
+                return "module_one\nmodule_two\n"
+
+        mock_distribution.return_value = FakeDist()
+
+        result = find_real_modules("package-with-top-level")
+        assert set(result) == {"module_one", "module_two"}
+
+    @patch("check_requirements_txt.importlib.metadata.distribution")
+    def test_find_real_modules_top_level_blank_lines(self, mock_distribution):
+        """Blank lines in top_level.txt should be ignored gracefully."""
+
+        class FakePath:
+            def __init__(self, name):
+                self.name = name
+
+        class FakeDist:
+            def __init__(self) -> None:
+                self.files = [FakePath("top_level.txt")]
+
+            @staticmethod
+            def read_text(_name: str) -> str:
+                return "module_one\n\nmodule_two\n"
+
+        mock_distribution.return_value = FakeDist()
+
+        result = find_real_modules("package-with-blank-lines")
+        assert set(result) == {"module_one", "module_two"}
+
+    @patch("check_requirements_txt.importlib.metadata.distribution")
+    def test_find_real_modules_top_level_empty(self, mock_distribution):
+        """Empty top_level.txt should fall back to file inference."""
+
+        class FakePath:
+            def __init__(self, name, path_str):
+                self.name = name
+                self._path_str = path_str
+
+            def __str__(self) -> str:
+                return self._path_str
+
+        class FakeDist:
+            def __init__(self) -> None:
+                self.files = [
+                    FakePath("top_level.txt", "top_level.txt"),
+                    FakePath("pkg/__init__.py", "pkg/__init__.py"),
+                    FakePath("standalone.py", "standalone.py"),
+                ]
+
+            @staticmethod
+            def read_text(_name: str) -> str:
+                return ""
+
+        mock_distribution.return_value = FakeDist()
+
+        result = find_real_modules("package-empty-top-level")
+        assert set(result) == {"pkg", "standalone"}
 
     def test_complex_extras_parsing(self, tmp_path):
         """Test parsing complex extras like uvicorn[standard], fastapi[all], etc."""
@@ -474,6 +804,30 @@ pytest[testing]>=7.0.0
             assert parsed_packages[expected_pkg] == expected_extras, (
                 f"Extras mismatch for {expected_pkg}: expected {expected_extras}, got {parsed_packages[expected_pkg]}"
             )
+
+
+class TestEntrypoints:
+    """Test the command entrypoints exposed by the package."""
+
+    def test_main_exits_with_run_code(self):
+        """Main should exit with the return code produced by run()."""
+        with (
+            patch("check_requirements_txt.run", return_value=0) as mock_run,
+            patch("check_requirements_txt.sys.exit") as mock_exit,
+        ):
+            main()
+
+        mock_run.assert_called_once_with()
+        mock_exit.assert_called_once_with(0)
+
+    def test_module_main_importable(self):
+        """The __main__ module should be importable without side effects."""
+        module_name = "check_requirements_txt.__main__"
+        sys.modules[module_name] = ModuleType(module_name)
+        del sys.modules[module_name]
+
+        module = importlib.import_module(module_name)
+        assert module is not None
 
 
 class TestRunFunction:
@@ -658,6 +1012,76 @@ dependencies = ["some_other_package"]
                 run([str(project_dir)])
         finally:
             os.chdir(original_cwd)
+
+    @patch("check_requirements_txt.stdlibs")
+    @patch("check_requirements_txt.load_req_modules")
+    @patch("check_requirements_txt.get_imports")
+    @patch("check_requirements_txt.project_modules", set())
+    def test_run_auto_discovers_configs_and_handles_duplicates(
+        self,
+        mock_get_imports,
+        mock_load_req,
+        mock_stdlibs,
+        tmp_path,
+        capsys,
+    ):
+        """Auto-discover requirements/pyproject files and report shared modules."""
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+
+        # Files to exercise directory scanning edge cases
+        (project_dir / "__init__.py").write_text("# root package marker\n")
+        (project_dir / ".hidden.py").write_text("import os\n")
+        pkg_dir = project_dir / "pkg"
+        pkg_dir.mkdir()
+        (pkg_dir / "__init__.py").write_text("# pkg init\n")
+        module_path = pkg_dir / "module.py"
+        module_path.write_text("import shared_mod\nimport ignored_mod\n")
+
+        # Create config files for autodiscovery
+        pyproject = project_dir / "pyproject.toml"
+        pyproject.write_text("""
+[project]
+name = "auto"
+dependencies = ["shared_mod"]
+""")
+        requirements = project_dir / "requirements.txt"
+        requirements.write_text("shared_mod\n")
+
+        mock_stdlibs.return_value = ["sys"]
+
+        def load_side_effect(path):
+            path = Path(path)
+            if path.name == "pyproject.toml":
+                return {"shared_mod": {"pkg_pyproject"}}
+            return {
+                "shared_mod": {"pkg_requirements"},
+                "ignored_mod": {"pkg_requirements"},
+            }
+
+        mock_load_req.side_effect = load_side_effect
+        mock_get_imports.return_value = {
+            "shared_mod": {f"{module_path}:1"},
+            "ignored_mod": {f"{module_path}:2"},
+        }
+
+        result = run(["--dst_dir", str(project_dir), "--ignore", "ignored_mod"])
+        assert result == 0
+
+        captured = capsys.readouterr()
+        assert '"shared_mod" required by:' in captured.out
+
+        called_paths = {Path(call.args[0]).name for call in mock_load_req.call_args_list}
+        assert {"pyproject.toml", "requirements.txt"} <= called_paths
+
+    def test_run_without_arguments_displays_help(self, capsys):
+        """Calling run with no arguments should print help and exit cleanly."""
+        with pytest.raises(SystemExit) as exc_info:
+            run([])
+
+        assert exc_info.value.code == 0
+        captured = capsys.readouterr()
+        assert "usage" in captured.out.lower()
 
 
 class TestPyprojectTomlSupport:
@@ -943,6 +1367,26 @@ dev = [
 
         # Should not include the include-group entry itself
         assert "include-group" not in package_names
+
+    def test_parse_pyproject_toml_dict_without_include(self, tmp_path):
+        """Dict entries without include-group keys should be ignored safely."""
+        pyproject_file = tmp_path / "pyproject.toml"
+        pyproject_content = """
+[project]
+name = "test-project"
+version = "0.1.0"
+
+[dependency-groups]
+extras = [
+    {optional = "value"},
+    "requests"
+]
+"""
+        pyproject_file.write_text(pyproject_content)
+
+        deps = list(parse_pyproject_toml(pyproject_file))
+        package_names = extract_package_names(deps)
+        assert "requests" in package_names
 
     def test_parse_pyproject_toml_complex_extras(self, tmp_path):
         """Test parsing pyproject.toml with complex extras like uvicorn[standard]."""

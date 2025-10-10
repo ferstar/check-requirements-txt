@@ -17,6 +17,7 @@ on:
           - '3.11'
           - '3.12'
           - '3.13'
+          - '3.14'
         default: ''
 
 jobs:
@@ -27,7 +28,7 @@ jobs:
       contents: read
     strategy:
       matrix:
-        python-version: ${{ github.event.inputs.python-version && fromJSON(format('["{0}"]', github.event.inputs.python-version)) || fromJSON('["3.10", "3.11", "3.12", "3.13"]') }}
+        python-version: ${{ github.event.inputs.python-version && fromJSON(format('["{0}"]', github.event.inputs.python-version)) || fromJSON('["3.10", "3.11", "3.12", "3.13", "3.14"]') }}
 
     steps:
     - uses: actions/checkout@v5

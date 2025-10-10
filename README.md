@@ -29,7 +29,7 @@ A tool (and also a pre-commit hook) to automatically check the missing packages 
   - `dependency-groups` - PEP 735 dependency groups with include-group support
   - `tool.uv.dev-dependencies` - Legacy uv development dependencies
 - ✅ **Auto-detection**: Automatically finds pyproject.toml and requirements.txt files
-- ✅ **Python 3.10-3.13**: Full compatibility across all modern Python versions
+- ✅ **Python 3.10-3.14**: Full compatibility across all modern Python versions
 - ✅ **Pre-commit integration**: Works seamlessly as a pre-commit hook
 - ✅ **Type-safe**: Fully typed with pyright/mypy support
 

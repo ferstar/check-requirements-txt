@@ -191,18 +191,34 @@ jobs:
         echo "tag=$TAG" >> $GITHUB_OUTPUT
         echo "Version: $VERSION, Tag: $TAG"
 
+    - name: Ensure tag exists
+      run: |
+        TAG="${{ steps.get_version.outputs.tag }}"
+        # Check if tag exists
+        if ! git rev-parse "$TAG" >/dev/null 2>&1; then
+          echo "Tag $TAG does not exist, creating it..."
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "Release $TAG"
+          git push origin "$TAG"
+          echo "Created and pushed tag $TAG"
+        else
+          echo "Tag $TAG already exists"
+        fi
+
     - name: Generate changelog
       id: changelog
       run: |
+        TAG="${{ steps.get_version.outputs.tag }}"
         # Get the previous tag
-        PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+        PREV_TAG=$(git describe --tags --abbrev=0 "$TAG^" 2>/dev/null || echo "")
 
         if [ -z "$PREV_TAG" ]; then
           # First release, get all commits
           CHANGELOG=$(git log --pretty=format:"- %s (%h)" --no-merges)
         else
           # Get commits since previous tag
-          CHANGELOG=$(git log ${PREV_TAG}..HEAD --pretty=format:"- %s (%h)" --no-merges)
+          CHANGELOG=$(git log ${PREV_TAG}..${TAG} --pretty=format:"- %s (%h)" --no-merges)
         fi
 
         # Save changelog to file
@@ -218,6 +234,7 @@ jobs:
     - name: Create GitHub Release
       uses: softprops/action-gh-release@v2
       with:
+        tag_name: ${{ steps.get_version.outputs.tag }}
         name: Release ${{ steps.get_version.outputs.tag }}
         body_path: changelog.txt
         files: dist/*

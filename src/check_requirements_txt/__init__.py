@@ -435,10 +435,9 @@ def run(argv: Sequence[str] | None = None) -> int:
     # Generate appropriate config file suggestion
     if len(config_file_types) == 1:
         config_suggestion = next(iter(config_file_types))
-    elif "pyproject.toml" in config_file_types:
-        config_suggestion = "pyproject.toml"
     else:
-        config_suggestion = "requirements.txt"  # pragma: no cover (unreachable with current collectors)
+        # Multiple config file types, suggest both
+        config_suggestion = " or ".join(sorted(config_file_types))
 
     error_count = 0
     args.ignore.add("pip")

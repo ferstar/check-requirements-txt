@@ -1074,6 +1074,51 @@ dependencies = ["shared_mod"]
         captured = capsys.readouterr()
         assert "usage" in captured.out.lower()
 
+    def test_multiple_config_files_suggestion(self, tmp_path, capsys):
+        """Test that error messages suggest the correct config file(s)."""
+        # Test 1: Only requirements.txt
+        test1_dir = tmp_path / "test1"
+        test1_dir.mkdir()
+        req_file = test1_dir / "requirements.txt"
+        req_file.write_text("pytest>=7.0.0\n")
+        py_file = test1_dir / "test.py"
+        py_file.write_text("import pytest\nimport numpy\n")
+
+        result = run(["-d", str(test1_dir)])
+        captured = capsys.readouterr()
+        assert result == 1
+        assert "check your requirements.txt please" in captured.out
+        assert "pyproject.toml" not in captured.out
+
+        # Test 2: Only pyproject.toml
+        test2_dir = tmp_path / "test2"
+        test2_dir.mkdir()
+        pyproject_file = test2_dir / "pyproject.toml"
+        pyproject_file.write_text('[project]\ndependencies = ["packaging>=20.0"]\n')
+        py_file2 = test2_dir / "test.py"
+        py_file2.write_text("import packaging\nimport numpy\n")
+
+        result = run(["-d", str(test2_dir)])
+        captured = capsys.readouterr()
+        assert result == 1
+        assert "check your pyproject.toml please" in captured.out
+        assert "requirements.txt" not in captured.out
+
+        # Test 3: Both files
+        test3_dir = tmp_path / "test3"
+        test3_dir.mkdir()
+        req_file3 = test3_dir / "requirements.txt"
+        req_file3.write_text("pytest>=7.0.0\n")
+        pyproject_file3 = test3_dir / "pyproject.toml"
+        pyproject_file3.write_text('[project]\ndependencies = ["packaging>=20.0"]\n')
+        py_file3 = test3_dir / "test.py"
+        py_file3.write_text("import pytest\nimport packaging\nimport numpy\n")
+
+        result = run(["-d", str(test3_dir)])
+        captured = capsys.readouterr()
+        assert result == 1
+        assert "check your pyproject.toml or requirements.txt please" in captured.out
+
 
 class TestPyprojectTomlSupport:
     """Test pyproject.toml parsing and support."""

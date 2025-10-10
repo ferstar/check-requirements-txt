@@ -85,17 +85,6 @@ jobs:
         python-version: "3.12"
         cache: 'pip'
 
-    - name: Cache Hatch environments
-      uses: actions/cache@v4
-      with:
-        path: |
-          ~/.local/share/hatch
-          ~/.cache/hatch
-        key: hatch-${{ runner.os }}-3.12-${{ hashFiles('**/pyproject.toml') }}
-        restore-keys: |
-          hatch-${{ runner.os }}-3.12-
-          hatch-${{ runner.os }}-
-
     - name: Install hatch
       run: pip install hatch
 

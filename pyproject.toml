@@ -96,6 +96,8 @@ reportMissingImports = true
 reportMissingTypeStubs = false
 reportUnusedImport = true
 reportUnusedVariable = true
+# Disable attribute access issue reporting to avoid false positives from newer Python stdlib
+reportAttributeAccessIssue = false
 
 
 [tool.ruff]

@@ -11,10 +11,10 @@ from collections import defaultdict
 from collections.abc import Generator, Iterable, Sequence
 from pathlib import Path
 
-try:
+if sys.version_info >= (3, 11):
     import tomllib
-except ImportError:
-    import tomli as tomllib  # type: ignore[no-redef]
+else:
+    import tomli as tomllib  # type: ignore[import-not-found]
 
 from packaging.requirements import Requirement
 

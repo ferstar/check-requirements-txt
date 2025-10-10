@@ -40,7 +40,7 @@ class TestModuleImportBehavior:
     """Exercise module import fallback paths."""
 
     def test_tomllib_fallback_uses_tomli(self, monkeypatch):
-        """Simulate ImportError for tomllib and ensure tomli fallback is used."""
+        """Simulate Python 3.10 environment and ensure tomli fallback is used."""
         dummy_tomli = ModuleType("tomli")
         monkeypatch.setitem(sys.modules, "tomli", dummy_tomli)
 
@@ -50,21 +50,12 @@ class TestModuleImportBehavior:
 
         remove_module("check_requirements_txt")
 
-        original_import = __import__
+        # Mock sys.version_info to simulate Python 3.10
+        monkeypatch.setattr(sys, "version_info", (3, 10, 0))
 
-        def fake_import(name, globalns=None, localns=None, fromlist=(), level=0):
-            if name == "tomllib":
-                message = "tomllib not available"
-                raise ImportError(message)
-            return original_import(name, globalns, localns, fromlist, level)
-
-        with patch("builtins.__import__", side_effect=fake_import):
-            module = importlib.import_module("check_requirements_txt")
+        module = importlib.import_module("check_requirements_txt")
 
         assert module.tomllib is dummy_tomli
-
-        monkeypatch.delitem(sys.modules, "tomli", raising=False)
-        importlib.reload(module)
 
 
 class TestParseRequirements:

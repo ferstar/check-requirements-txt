@@ -6,7 +6,7 @@ on:
       python-versions:
         description: 'Python versions to test (comma-separated, e.g., "3.10,3.12")'
         required: false
-        default: '3.10,3.11,3.12,3.13'
+        default: '3.10,3.11,3.12,3.13,3.14'
         type: string
       run-lint:
         description: 'Run linting checks'

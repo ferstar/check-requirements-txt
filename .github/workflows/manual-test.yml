@@ -53,6 +53,18 @@ jobs:
       uses: actions/setup-python@v6
       with:
         python-version: ${{ matrix.python-version }}
+        cache: 'pip'
+
+    - name: Cache Hatch environments
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.local/share/hatch
+          ~/.cache/hatch
+        key: hatch-${{ runner.os }}-${{ matrix.python-version }}-${{ hashFiles('**/pyproject.toml') }}
+        restore-keys: |
+          hatch-${{ runner.os }}-${{ matrix.python-version }}-
+          hatch-${{ runner.os }}-
 
     - name: Install hatch
       run: pip install hatch
@@ -79,6 +91,18 @@ jobs:
       uses: actions/setup-python@v6
       with:
         python-version: "3.12"
+        cache: 'pip'
+
+    - name: Cache Hatch environments
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.local/share/hatch
+          ~/.cache/hatch
+        key: hatch-${{ runner.os }}-3.12-${{ hashFiles('**/pyproject.toml') }}
+        restore-keys: |
+          hatch-${{ runner.os }}-3.12-
+          hatch-${{ runner.os }}-
 
     - name: Install hatch
       run: pip install hatch
@@ -107,6 +131,7 @@ jobs:
       uses: actions/setup-python@v6
       with:
         python-version: ${{ matrix.python-version }}
+        cache: 'pip'
 
     - name: Download build artifacts
       uses: actions/download-artifact@v5

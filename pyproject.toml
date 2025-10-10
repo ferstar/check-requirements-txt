@@ -90,7 +90,7 @@ all = [
 [tool.pyright]
 include = ["src", "tests"]
 exclude = ["**/__pycache__", "**/.pytest_cache"]
-pythonVersion = "3.12"
+pythonVersion = "3.10"
 typeCheckingMode = "basic"
 reportMissingImports = true
 reportMissingTypeStubs = false

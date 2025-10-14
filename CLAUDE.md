@@ -20,6 +20,12 @@ hatch run cov
 
 # Run tests with coverage and generate XML report
 hatch run cov-xml
+
+# Run specific test file
+hatch run test tests/test_core.py::TestParseRequirements::test_basic_requirements
+
+# Run tests with specific pattern
+hatch run test -k "test_pyproject"
 ```
 
 ### Linting and Formatting
@@ -35,12 +41,18 @@ hatch run lint:typing
 
 # Auto-format code
 hatch run lint:fmt
+
+# Fix style issues automatically
+hatch run lint:fix
 ```
 
 ### Building
 ```bash
 # Build distribution packages
 hatch build
+
+# Build and install in development mode
+pip install -e .
 ```
 
 ### Running the Tool
@@ -50,6 +62,13 @@ python -m check_requirements_txt <path> [options]
 
 # Or after installation
 check-requirements-txt <path> [options]
+
+# Common usage patterns
+check-requirements-txt src/                    # Check directory
+check-requirements-txt main.py               # Check specific files
+check-requirements-txt -d .                # Check current directory
+check-requirements-txt -r requirements.txt   # Specify requirements file
+check-requirements-txt -r pyproject.toml   # Specify pyproject.toml
 ```
 
 ## Project Architecture
@@ -82,6 +101,16 @@ The tool automatically identifies local project modules by:
 - Building a set of project module names from relative paths
 - Excluding these from missing package checks
 
+**Color and Output:**
+- `supports_color()` - Detects terminal color support
+- `colorize()`, `red()`, `yellow()` - Colorized output functions
+- `param_as_set()` - Utility for parsing comma-separated parameters
+
+**Global State:**
+- `project_modules` - Set of detected project modules (excluded from checks)
+- `MODULE_IMPORT_P`, `MODULE_FROM_P` - Regex patterns for import detection
+- `DROP_LINE_P` - Regex for skipping certain lines
+
 ### Test Suite: `tests/test_core.py`
 
 Comprehensive test coverage including:
@@ -91,6 +120,8 @@ Comprehensive test coverage including:
 - Color terminal support detection
 - Import detection and project module filtering
 - Integration tests with mocked importlib.metadata
+- Complex extras parsing (uvicorn[standard], fastapi[all], etc.)
+- Configuration auto-discovery and duplicate handling
 
 ## Python Version Support
 
@@ -108,7 +139,32 @@ Supports Python 3.10-3.14. Uses conditional imports for `tomllib` (Python 3.11+)
 
 5. **Configuration File Detection**: Auto-discovers `pyproject.toml` and `*requirement*.txt` files if not explicitly specified
 
+6. **Project Module Filtering**: Automatically detects and excludes local project modules from missing package checks
+
+7. **Error Handling**: Graceful handling of invalid requirements, encoding issues, and missing packages
+
+8. **Color Output**: ANSI color support with fallback for non-color terminals
+
 ## CI/CD
 
 - **CI** (`.github/workflows/ci.yml`): Tests on Python 3.10-3.14, runs coverage, linting, and builds packages
 - **Lint** (`.github/workflows/lint.yml`): Automated linting with optional auto-fix on workflow dispatch
+- **Manual Test** (`.github/workflows/manual-test.yml`): Manual testing workflow
+- **Release** (`.github/workflows/release.yml`): Automated GitHub Releases
+
+## Common Development Tasks
+
+1. **Adding new parsing features**: Extend `parse_requirements()` or `parse_pyproject_toml()` functions
+2. **Improving module discovery**: Enhance `find_real_modules()` or `find_depends()` functions
+3. **Adding test coverage**: All new features should have comprehensive tests in `tests/test_core.py`
+4. **Updating dependencies**: Modify `hatch.toml` for project dependencies
+5. **Pre-commit integration**: The tool works as a pre-commit hook (see README for configuration)
+
+## Important Notes
+
+- The tool uses `packaging.requirements.Requirement` for parsing requirement strings
+- Import detection uses regex patterns for `import` and `from ... import` statements
+- Project modules are detected by scanning directory structure and file paths
+- Error messages suggest the appropriate config file format (requirements.txt vs pyproject.toml)
+- The `run()` function returns exit code equal to number of missing dependencies
+- Tests extensively use mocking for `importlib.metadata` to avoid dependency on installed packages

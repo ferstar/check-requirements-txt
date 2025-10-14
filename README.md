@@ -32,6 +32,8 @@ A tool (and also a pre-commit hook) to automatically check the missing packages 
 - ✅ **Python 3.10-3.14**: Full compatibility across all modern Python versions
 - ✅ **Pre-commit integration**: Works seamlessly as a pre-commit hook
 - ✅ **Type-safe**: Fully typed with pyright/mypy support
+- ✅ **Unused dependency detection**: Find packages in requirements that aren't used in code
+- ✅ **Parallel processing**: Fast multi-file scanning with configurable workers
 
 ## Installation
 
@@ -65,6 +67,12 @@ check-requirements-txt src/ -r pyproject.toml
 
 # Check specific Python files
 check-requirements-txt main.py utils.py -r pyproject.toml
+
+# Check for unused dependencies
+check-requirements-txt --unused src/
+
+# Use parallel processing for faster scanning
+check-requirements-txt --parallel --max-workers 8 src/
 ```
 
 ### Supported File Formats
@@ -150,6 +158,21 @@ Bad import detected: "missing_package", check your pyproject.toml please.
 /path/to/file.py:5
 $ echo $?
 1
+```
+
+When checking for unused dependencies:
+
+```shell
+# Find unused dependencies
+$ check-requirements-txt --unused src/
+Unused dependencies found in requirements.txt:
+  - pytest
+  - black
+  - unused-package
+
+# Exit code indicates number of issues (missing + unused)
+$ echo $?
+3
 ```
 
 ## License

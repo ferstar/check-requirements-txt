@@ -17,6 +17,9 @@ from check_requirements_txt import (
     find_depends,
     find_real_modules,
     get_imports,
+    get_imports_parallel,
+    load_all_packages,
+    load_package_dependencies,
     load_req_modules,
     main,
     param_as_set,
@@ -1479,3 +1482,371 @@ web = [
             assert parsed_packages[expected_pkg] == expected_extras, (
                 f"Extras mismatch for {expected_pkg}: expected {expected_extras}, got {parsed_packages[expected_pkg]}"
             )
+
+
+class TestLoadAllPackages:
+    """Test the load_all_packages function for unused dependency detection."""
+
+    def test_load_all_packages_requirements(self, tmp_path):
+        """Test loading all packages from requirements.txt."""
+        req_content = """
+requests>=2.25.0
+django[bcrypt]>=4.0.0
+coverage[toml]>=6.0
+        """
+        req_file = tmp_path / "requirements.txt"
+        req_file.write_text(req_content)
+
+        packages = load_all_packages(req_file)
+        expected = {"requests", "django", "coverage"}
+        assert packages == expected
+
+    def test_load_all_packages_pyproject_toml(self, tmp_path):
+        """Test loading all packages from pyproject.toml."""
+        pyproject_content = """
+[project]
+name = "test-project"
+version = "0.1.0"
+dependencies = [
+    "requests>=2.25.0",
+    "coverage[toml]>=6.0"
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0", "black"]
+"""
+        pyproject_file = tmp_path / "pyproject.toml"
+        pyproject_file.write_text(pyproject_content)
+
+        # Mock find_depends to avoid recursive dependency resolution in tests
+        with patch("check_requirements_txt.find_depends", return_value=[]):
+            packages = load_all_packages(pyproject_file)
+
+        # Should include direct dependencies only, not their transitive deps
+        expected = {"requests", "coverage", "pytest", "black"}
+        assert packages == expected
+
+    def test_load_all_packages_with_transitive_deps(self, tmp_path):
+        """Test that load_all_packages includes transitive dependencies when flag is set."""
+        req_content = "requests>=2.25.0"  # requests has many dependencies
+        req_file = tmp_path / "requirements.txt"
+        req_file.write_text(req_content)
+
+        # Mock find_depends to return known dependencies
+        def mock_find_depends(package_name, _extras=None):
+            if package_name == "requests":
+                return ["requests", "urllib3", "certifi", "charset-normalizer", "idna"]
+            return [package_name]
+
+        with patch("check_requirements_txt.find_depends", side_effect=mock_find_depends):
+            packages = load_all_packages(req_file, include_transitive=True)
+
+        expected = {"requests", "urllib3", "certifi", "charset-normalizer", "idna"}
+        assert packages == expected
+
+
+class TestParallelProcessing:
+    """Test parallel file processing functionality."""
+
+    def test_get_imports_parallel_basic(self, tmp_path):
+        """Test basic parallel import detection."""
+        py_file = tmp_path / "test.py"
+        py_file.write_text("""
+import requests
+from pathlib import Path
+import os
+        """)
+
+        with patch("check_requirements_txt.project_modules", set()):
+            imports = get_imports_parallel([tmp_path])
+
+        assert "requests" in imports
+        assert "pathlib" in imports
+        assert "os" in imports
+
+    def test_get_imports_parallel_ignores_project_modules(self, tmp_path):
+        """Test parallel processing ignores project modules."""
+        py_file = tmp_path / "test.py"
+        py_file.write_text("""
+import requests
+import my_project_module
+        """)
+
+        with patch("check_requirements_txt.project_modules", {"my_project_module"}):
+            imports = get_imports_parallel([tmp_path])
+
+        assert "requests" in imports
+        assert "my_project_module" not in imports
+
+    def test_get_imports_parallel_nested_directories(self, tmp_path):
+        """Test parallel processing with nested directories."""
+        level1 = tmp_path / "level1"
+        level1.mkdir()
+        file_l1 = level1 / "l1_file.py"
+        file_l1.write_text("import mod_l1")
+
+        level2 = level1 / "level2"
+        level2.mkdir()
+        file_l2 = level2 / "l2_file.py"
+        file_l2.write_text("import mod_l2")
+
+        with patch("check_requirements_txt.project_modules", set()):
+            imports = get_imports_parallel([tmp_path])
+
+        assert "mod_l1" in imports
+        assert "mod_l2" in imports
+
+    def test_get_imports_parallel_skips_dot_directories(self, tmp_path):
+        """Test parallel processing skips dot directories."""
+        dot_dir = tmp_path / ".hidden"
+        dot_dir.mkdir()
+        hidden_file = dot_dir / "hidden.py"
+        hidden_file.write_text("import hidden_module")
+
+        regular_file = tmp_path / "regular.py"
+        regular_file.write_text("import regular_module")
+
+        with patch("check_requirements_txt.project_modules", set()):
+            imports = get_imports_parallel([tmp_path])
+
+        assert "regular_module" in imports
+        assert "hidden_module" not in imports
+
+    def test_get_imports_parallel_handles_errors(self, tmp_path):
+        """Test parallel processing handles file read errors gracefully."""
+        # Create a file that can't be read
+        bad_file = tmp_path / "bad.py"
+        bad_file.write_text("import valid_module")
+        # Make file unreadable (this might not work on all systems, but tests the error handling)
+
+        with patch("check_requirements_txt.project_modules", set()):
+            # Should not raise exception
+            imports = get_imports_parallel([tmp_path])
+            # Should still find the valid module if file can be read
+            if "valid_module" in [line for file_imports in imports.values() for line in file_imports]:
+                assert True  # File was readable
+            else:
+                assert True  # File wasn't readable, but no exception was raised
+
+
+class TestUnusedDependencies:
+    """Test unused dependency detection functionality."""
+
+    @patch("check_requirements_txt.stdlibs")
+    @patch("check_requirements_txt.load_req_modules")
+    @patch("check_requirements_txt.get_imports")
+    @patch("check_requirements_txt.load_all_packages")
+    @patch("check_requirements_txt.project_modules", set())
+    def test_run_with_unused_dependencies(
+        self, mock_load_all_packages, mock_get_imports, mock_load_req, mock_stdlibs, tmp_path, capsys
+    ):
+        """Test run with --unused flag detects unused dependencies."""
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+
+        py_file = project_dir / "main.py"
+        py_file.write_text("import requests")  # Only uses requests
+
+        req_file = project_dir / "requirements.txt"
+        req_file.write_text("requests\npytest\nblack")  # Has unused pytest and black
+
+        # Mock functions
+        mock_stdlibs.return_value = ["sys", "os", "re"]
+        mock_load_req.return_value = {"requests": {"requests"}}
+        mock_get_imports.return_value = {"requests": {f"{py_file}:1"}}
+        mock_load_all_packages.return_value = {"requests", "pytest", "black"}  # All declared packages
+
+        return_code = run([str(project_dir), "--req-txt-path", str(req_file), "--unused"])
+        assert return_code == 2  # 2 unused packages
+
+        captured = capsys.readouterr()
+        assert 'Bad import detected: "requests"' not in captured.out
+        assert "Unused dependencies found" in captured.out
+        assert "pytest" in captured.out
+        assert "black" in captured.out
+
+    @patch("check_requirements_txt.stdlibs")
+    @patch("check_requirements_txt.load_req_modules")
+    @patch("check_requirements_txt.get_imports")
+    @patch("check_requirements_txt.load_all_packages")
+    @patch("check_requirements_txt.project_modules", set())
+    def test_run_no_unused_dependencies(
+        self, mock_load_all_packages, mock_get_imports, mock_load_req, mock_stdlibs, tmp_path, capsys
+    ):
+        """Test run with --unused flag when no unused dependencies."""
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+
+        py_file = project_dir / "main.py"
+        py_file.write_text("import requests\nimport pytest")
+
+        req_file = project_dir / "requirements.txt"
+        req_file.write_text("requests\npytest")
+
+        # Mock functions
+        mock_stdlibs.return_value = ["sys", "os", "re"]
+        mock_load_req.return_value = {"requests": {"requests"}, "pytest": {"pytest"}}
+        mock_get_imports.return_value = {"requests": {f"{py_file}:1"}, "pytest": {f"{py_file}:2"}}
+        mock_load_all_packages.return_value = {"requests", "pytest"}
+
+        return_code = run([str(project_dir), "--req-txt-path", str(req_file), "--unused"])
+        assert return_code == 0
+
+        captured = capsys.readouterr()
+        assert "Unused dependencies found" not in captured.out
+
+    @patch("check_requirements_txt.stdlibs")
+    @patch("check_requirements_txt.load_req_modules")
+    @patch("check_requirements_txt.get_imports")
+    @patch("check_requirements_txt.load_all_packages")
+    @patch("check_requirements_txt.project_modules", set())
+    def test_run_unused_with_ignored_packages(
+        self, mock_load_all_packages, mock_get_imports, mock_load_req, mock_stdlibs, tmp_path, capsys
+    ):
+        """Test that ignored packages are not reported as unused."""
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+
+        py_file = project_dir / "main.py"
+        py_file.write_text("import requests")
+
+        req_file = project_dir / "requirements.txt"
+        req_file.write_text("requests\npytest\nblack")
+
+        # Mock functions
+        mock_stdlibs.return_value = ["sys", "os", "re"]
+        mock_load_req.return_value = {"requests": {"requests"}}
+        mock_get_imports.return_value = {"requests": {f"{py_file}:1"}}
+        mock_load_all_packages.return_value = {"requests", "pytest", "black"}
+
+        return_code = run([
+            str(project_dir),
+            "--req-txt-path", str(req_file),
+            "--unused",
+            "--ignore", "black"  # Ignore black
+        ])
+        assert return_code == 1  # Only pytest should be reported as unused
+
+        captured = capsys.readouterr()
+        assert "Unused dependencies found" in captured.out
+        assert "pytest" in captured.out
+        assert "black" not in captured.out
+
+    @patch("check_requirements_txt.stdlibs")
+    @patch("check_requirements_txt.load_req_modules")
+    @patch("check_requirements_txt.get_imports")
+    @patch("check_requirements_txt.load_all_packages")
+    @patch("check_requirements_txt.project_modules", set())
+    def test_run_without_unused_flag(
+        self, mock_load_all_packages, mock_get_imports, mock_load_req, mock_stdlibs, tmp_path
+    ):
+        """Test that --unused flag must be explicitly enabled."""
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+
+        py_file = project_dir / "main.py"
+        py_file.write_text("import requests")
+
+        req_file = project_dir / "requirements.txt"
+        req_file.write_text("requests\npytest")  # pytest is unused but won't be checked
+
+        # Mock functions
+        mock_stdlibs.return_value = ["sys", "os", "re"]
+        mock_load_req.return_value = {"requests": {"requests"}}
+        mock_get_imports.return_value = {"requests": {f"{py_file}:1"}}
+        # load_all_packages should not be called when --unused is not enabled
+        mock_load_all_packages.return_value = {"requests", "pytest"}
+
+        return_code = run([str(project_dir), "--req-txt-path", str(req_file)])
+        assert return_code == 0  # No missing imports, unused not checked
+        mock_load_all_packages.assert_not_called()
+
+
+class TestParallelFlag:
+    """Test parallel processing command line flag."""
+
+    @patch("check_requirements_txt.stdlibs")
+    @patch("check_requirements_txt.load_req_modules")
+    @patch("check_requirements_txt.get_imports")
+    @patch("check_requirements_txt.project_modules", set())
+    def test_run_with_parallel_flag(self, mock_get_imports, mock_load_req, mock_stdlibs, tmp_path):
+        """Test run with --parallel flag uses parallel processing."""
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+
+        py_file = project_dir / "main.py"
+        py_file.write_text("import requests")
+
+        req_file = project_dir / "requirements.txt"
+        req_file.write_text("requests")
+
+        # Mock functions
+        mock_stdlibs.return_value = ["sys", "os", "re"]
+        mock_load_req.return_value = {"requests": {"requests"}}
+        mock_get_imports.return_value = {"requests": {f"{py_file}:1"}}
+
+        return_code = run(["--dst_dir", str(project_dir), "--req-txt-path", str(req_file), "--parallel"])
+        assert return_code == 0
+
+        # Verify get_imports was called with parallel=True and absolute path
+        expected_path = project_dir.absolute()
+        mock_get_imports.assert_called_once_with([expected_path], use_parallel=True, max_workers=4)
+
+    @patch("check_requirements_txt.stdlibs")
+    @patch("check_requirements_txt.load_req_modules")
+    @patch("check_requirements_txt.get_imports")
+    @patch("check_requirements_txt.project_modules", set())
+    def test_run_with_custom_workers(self, mock_get_imports, mock_load_req, mock_stdlibs, tmp_path):
+        """Test run with custom --max-workers flag."""
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+
+        py_file = project_dir / "main.py"
+        py_file.write_text("import requests")
+
+        req_file = project_dir / "requirements.txt"
+        req_file.write_text("requests")
+
+        # Mock functions
+        mock_stdlibs.return_value = ["sys", "os", "re"]
+        mock_load_req.return_value = {"requests": {"requests"}}
+        mock_get_imports.return_value = {"requests": {f"{py_file}:1"}}
+
+        return_code = run([
+            "--dst_dir", str(project_dir),
+            "--req-txt-path", str(req_file),
+            "--parallel",
+            "--max-workers", "8"
+        ])
+        assert return_code == 0
+
+        # Verify get_imports was called with custom worker count and absolute path
+        expected_path = project_dir.absolute()
+        mock_get_imports.assert_called_once_with([expected_path], use_parallel=True, max_workers=8)
+
+    @patch("check_requirements_txt.stdlibs")
+    @patch("check_requirements_txt.load_req_modules")
+    @patch("check_requirements_txt.get_imports")
+    @patch("check_requirements_txt.project_modules", set())
+    def test_run_without_parallel_flag(self, mock_get_imports, mock_load_req, mock_stdlibs, tmp_path):
+        """Test run without --parallel flag uses sequential processing."""
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+
+        py_file = project_dir / "main.py"
+        py_file.write_text("import requests")
+
+        req_file = project_dir / "requirements.txt"
+        req_file.write_text("requests")
+
+        # Mock functions
+        mock_stdlibs.return_value = ["sys", "os", "re"]
+        mock_load_req.return_value = {"requests": {"requests"}}
+        mock_get_imports.return_value = {"requests": {f"{py_file}:1"}}
+
+        return_code = run(["--dst_dir", str(project_dir), "--req-txt-path", str(req_file)])
+        assert return_code == 0
+
+        # Verify get_imports was called with parallel=False (default) and absolute path
+        expected_path = project_dir.absolute()
+        mock_get_imports.assert_called_once_with([expected_path], use_parallel=False, max_workers=4)

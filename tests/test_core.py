@@ -19,7 +19,6 @@ from check_requirements_txt import (
     get_imports,
     get_imports_parallel,
     load_all_packages,
-    load_package_dependencies,
     load_req_modules,
     main,
     param_as_set,
@@ -1719,12 +1718,16 @@ class TestUnusedDependencies:
         mock_get_imports.return_value = {"requests": {f"{py_file}:1"}}
         mock_load_all_packages.return_value = {"requests", "pytest", "black"}
 
-        return_code = run([
-            str(project_dir),
-            "--req-txt-path", str(req_file),
-            "--unused",
-            "--ignore", "black"  # Ignore black
-        ])
+        return_code = run(
+            [
+                str(project_dir),
+                "--req-txt-path",
+                str(req_file),
+                "--unused",
+                "--ignore",
+                "black",  # Ignore black
+            ]
+        )
         assert return_code == 1  # Only pytest should be reported as unused
 
         captured = capsys.readouterr()
@@ -1812,12 +1815,9 @@ class TestParallelFlag:
         mock_load_req.return_value = {"requests": {"requests"}}
         mock_get_imports.return_value = {"requests": {f"{py_file}:1"}}
 
-        return_code = run([
-            "--dst_dir", str(project_dir),
-            "--req-txt-path", str(req_file),
-            "--parallel",
-            "--max-workers", "8"
-        ])
+        return_code = run(
+            ["--dst_dir", str(project_dir), "--req-txt-path", str(req_file), "--parallel", "--max-workers", "8"]
+        )
         assert return_code == 0
 
         # Verify get_imports was called with custom worker count and absolute path

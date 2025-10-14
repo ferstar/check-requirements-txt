@@ -8,6 +8,7 @@ import locale
 import os
 import re
 import sys
+import warnings
 from collections import defaultdict
 from collections.abc import Generator, Iterable, Sequence
 from pathlib import Path
@@ -18,6 +19,9 @@ else:
     import tomli as tomllib  # type: ignore[import-not-found]
 
 from packaging.requirements import Requirement
+
+# Constants
+MAX_WORKERS_LIMIT = 64
 
 MODULE_IMPORT_P = re.compile(r"^\s*?import\s+(?P<module>[a-zA-Z0-9_]+)")
 MODULE_FROM_P = re.compile(r"^\s*?from\s+(?P<module>[a-zA-Z0-9_]+).*?\simport")
@@ -317,7 +321,7 @@ def load_req_modules(req_path: Path | str) -> dict[str, set[str]]:
     return modules
 
 
-def load_all_packages(req_path: Path | str, include_transitive: bool = False) -> set[str]:
+def load_all_packages(req_path: Path | str, *, include_transitive: bool = False) -> set[str]:
     """Load all package names from requirements file.
 
     Args:
@@ -391,7 +395,6 @@ def get_imports_parallel(paths: Generator[Path, None, None] | list[Path], max_wo
                                 path_modules[module].add(f"{p}:{idx}")
                 except (UnicodeDecodeError, OSError) as e:
                     # Skip files that can't be read, but log the error if verbose
-                    import warnings
                     warnings.warn(f"Failed to read {p}: {e}", stacklevel=2)
             elif p.is_dir() and not p.name.startswith("."):
                 for item in p.iterdir():
@@ -416,7 +419,6 @@ def get_imports_parallel(paths: Generator[Path, None, None] | list[Path], max_wo
             except Exception as e:
                 # Handle any exceptions in individual file processing
                 # Individual file errors shouldn't stop the entire process
-                import warnings
                 path = future_to_path[future]
                 warnings.warn(f"Failed to process {path}: {e}", stacklevel=2)
 
@@ -499,8 +501,8 @@ def run(argv: Sequence[str] | None = None) -> int:
     # Validate max_workers parameter
     if args.max_workers < 1:
         parser.error("--max-workers must be at least 1")
-    if args.max_workers > 64:
-        parser.error("--max-workers should not exceed 64")
+    if args.max_workers > MAX_WORKERS_LIMIT:
+        parser.error(f"--max-workers should not exceed {MAX_WORKERS_LIMIT}")
 
     if not argv and not any([args.filenames, args.dst_dir, args.req_paths]):
         parser.print_help()

@@ -26,6 +26,7 @@ classifiers = [
 dependencies = [
   "packaging",
   "tomli>=1.2.0; python_version<'3.11'",
+  "anyio>=4.0.0",
 ]
 
 [project.urls]

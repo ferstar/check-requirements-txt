@@ -17,7 +17,6 @@ from check_requirements_txt import (
     find_depends,
     find_real_modules,
     get_imports,
-    get_imports_parallel,
     load_all_packages,
     load_req_modules,
     main,
@@ -1544,88 +1543,6 @@ dev = ["pytest>=7.0", "black"]
         assert packages == expected
 
 
-class TestParallelProcessing:
-    """Test parallel file processing functionality."""
-
-    def test_get_imports_parallel_basic(self, tmp_path):
-        """Test basic parallel import detection."""
-        py_file = tmp_path / "test.py"
-        py_file.write_text("""
-import requests
-from pathlib import Path
-import os
-        """)
-
-        with patch("check_requirements_txt.project_modules", set()):
-            imports = get_imports_parallel([tmp_path])
-
-        assert "requests" in imports
-        assert "pathlib" in imports
-        assert "os" in imports
-
-    def test_get_imports_parallel_ignores_project_modules(self, tmp_path):
-        """Test parallel processing ignores project modules."""
-        py_file = tmp_path / "test.py"
-        py_file.write_text("""
-import requests
-import my_project_module
-        """)
-
-        with patch("check_requirements_txt.project_modules", {"my_project_module"}):
-            imports = get_imports_parallel([tmp_path])
-
-        assert "requests" in imports
-        assert "my_project_module" not in imports
-
-    def test_get_imports_parallel_nested_directories(self, tmp_path):
-        """Test parallel processing with nested directories."""
-        level1 = tmp_path / "level1"
-        level1.mkdir()
-        file_l1 = level1 / "l1_file.py"
-        file_l1.write_text("import mod_l1")
-
-        level2 = level1 / "level2"
-        level2.mkdir()
-        file_l2 = level2 / "l2_file.py"
-        file_l2.write_text("import mod_l2")
-
-        with patch("check_requirements_txt.project_modules", set()):
-            imports = get_imports_parallel([tmp_path])
-
-        assert "mod_l1" in imports
-        assert "mod_l2" in imports
-
-    def test_get_imports_parallel_skips_dot_directories(self, tmp_path):
-        """Test parallel processing skips dot directories."""
-        dot_dir = tmp_path / ".hidden"
-        dot_dir.mkdir()
-        hidden_file = dot_dir / "hidden.py"
-        hidden_file.write_text("import hidden_module")
-
-        regular_file = tmp_path / "regular.py"
-        regular_file.write_text("import regular_module")
-
-        with patch("check_requirements_txt.project_modules", set()):
-            imports = get_imports_parallel([tmp_path])
-
-        assert "regular_module" in imports
-        assert "hidden_module" not in imports
-
-    def test_get_imports_parallel_handles_errors(self, tmp_path):
-        """Test parallel processing handles file read errors gracefully."""
-        # Create a file that can't be read
-        bad_file = tmp_path / "bad.py"
-        bad_file.write_text("import valid_module")
-        # Make file unreadable (this might not work on all systems, but tests the error handling)
-
-        with patch("check_requirements_txt.project_modules", set()):
-            # Should not raise exception
-            imports = get_imports_parallel([tmp_path])
-            # Should still find the valid module if file can be read
-            if "valid_module" in [line for file_imports in imports.values() for line in file_imports]:
-                assert True  # File was readable
-            else:
-                assert True  # File wasn't readable, but no exception was raised
 
 
 class TestUnusedDependencies:

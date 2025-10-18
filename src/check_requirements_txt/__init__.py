@@ -374,15 +374,63 @@ def load_package_dependencies(req_path: Path | str) -> dict[str, set[str]]:
     return dependencies
 
 
-def get_imports_parallel(paths: Generator[Path, None, None] | list[Path], max_workers: int = 4) -> dict[str, set[str]]:
-    """Get imports using parallel processing for better performance with many files."""
+import asyncio
+
+import aiofiles
+
+
+async def get_imports_async(paths: Generator[Path, None, None] | list[Path]) -> dict[str, set[str]]:
+    """Get imports using asyncio for high-performance I/O."""
     modules: dict[str, set[str]] = defaultdict(set)
+    all_paths = list(paths)
 
-    def process_single_path(p: Path) -> dict[str, set[str]]:
-        """Process a single path and return its imports."""
-        path_modules: dict[str, set[str]] = defaultdict(set)
+    async def process_file(p: Path):
+        """Asynchronously read a file and find imports."""
+        try:
+            async with aiofiles.open(p, mode="r") as f:
+                content = await f.read()
+            for idx, line in enumerate(content.splitlines(), 1):
+                match = MODULE_IMPORT_P.search(line) or MODULE_FROM_P.search(line)
+                if not match:
+                    continue
+                module = match.group("module").lower()
+                if module not in project_modules:
+                    modules[module].add(f"{p}:{idx}")
+        except (UnicodeDecodeError, OSError) as e:
+            warnings.warn(f"Failed to read {p}: {e}", stacklevel=2)
 
-        def process_path_recursively(p: Path):
+    async def find_python_files(root: Path):
+        """Recursively find all Python files in a directory."""
+        if root.is_file() and root.suffix.lower() == ".py":
+            yield root
+        elif root.is_dir() and not root.name.startswith("."):
+            for item in root.iterdir():
+                async for py_file in find_python_files(item):
+                    yield py_file
+
+    tasks = []
+    for path in all_paths:
+        async for py_file in find_python_files(path):
+            tasks.append(process_file(py_file))
+
+    await asyncio.gather(*tasks)
+    return modules
+
+
+def get_imports(
+    paths: Generator[Path, None, None] | list[Path],
+    *,
+    use_parallel: bool = False,
+    max_workers: int = 4,  # Keep for compatibility, but not used by asyncio
+) -> dict[str, set[str]]:
+    """Get imports from Python files."""
+    if use_parallel:
+        return asyncio.run(get_imports_async(paths))
+    else:
+        # Original sequential implementation
+        modules: dict[str, set[str]] = defaultdict(set)
+
+        def process_path(p: Path):
             if p.is_file() and p.suffix.lower() == ".py":
                 try:
                     with open(p) as file_obj:
@@ -392,62 +440,9 @@ def get_imports_parallel(paths: Generator[Path, None, None] | list[Path], max_wo
                                 continue
                             module = match.group("module").lower()
                             if module not in project_modules:
-                                path_modules[module].add(f"{p}:{idx}")
+                                modules[module].add(f"{p}:{idx}")
                 except (UnicodeDecodeError, OSError) as e:
-                    # Skip files that can't be read, but log the error if verbose
                     warnings.warn(f"Failed to read {p}: {e}", stacklevel=2)
-            elif p.is_dir() and not p.name.startswith("."):
-                for item in p.iterdir():
-                    process_path_recursively(item)
-
-        process_path_recursively(p)
-        return path_modules
-
-    # Collect all paths to process
-    all_paths = list(paths)
-
-    # Use ThreadPoolExecutor for I/O bound tasks
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-        future_to_path = {executor.submit(process_single_path, path): path for path in all_paths}
-
-        for future in concurrent.futures.as_completed(future_to_path):
-            try:
-                path_result = future.result()
-                # Merge results
-                for module, locations in path_result.items():
-                    modules[module].update(locations)
-            except Exception as e:
-                # Handle any exceptions in individual file processing
-                # Individual file errors shouldn't stop the entire process
-                path = future_to_path[future]
-                warnings.warn(f"Failed to process {path}: {e}", stacklevel=2)
-
-    return modules
-
-
-def get_imports(
-    paths: Generator[Path, None, None] | list[Path],
-    *,
-    use_parallel: bool = False,
-    max_workers: int = 4,
-) -> dict[str, set[str]]:
-    """Get imports from Python files."""
-    if use_parallel:
-        return get_imports_parallel(paths, max_workers)
-    else:
-        # Original sequential implementation
-        modules: dict[str, set[str]] = defaultdict(set)
-
-        def process_path(p: Path):
-            if p.is_file() and p.suffix.lower() == ".py":
-                with open(p) as file_obj:
-                    for idx, line in enumerate(file_obj, 1):
-                        match = MODULE_IMPORT_P.search(line) or MODULE_FROM_P.search(line)
-                        if not match:
-                            continue
-                        module = match.group("module").lower()
-                        if module not in project_modules:
-                            modules[module].add(f"{p}:{idx}")
             elif p.is_dir() and not p.name.startswith("."):
                 for item in p.iterdir():
                     process_path(item)

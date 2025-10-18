@@ -376,7 +376,7 @@ def load_package_dependencies(req_path: Path | str) -> dict[str, set[str]]:
 
 import asyncio
 
-import aiofiles
+import anyio
 
 
 async def get_imports_async(paths: Generator[Path, None, None] | list[Path]) -> dict[str, set[str]]:
@@ -387,8 +387,7 @@ async def get_imports_async(paths: Generator[Path, None, None] | list[Path]) -> 
     async def process_file(p: Path):
         """Asynchronously read a file and find imports."""
         try:
-            async with aiofiles.open(p, mode="r") as f:
-                content = await f.read()
+            content = await anyio.Path(p).read_text()
             for idx, line in enumerate(content.splitlines(), 1):
                 match = MODULE_IMPORT_P.search(line) or MODULE_FROM_P.search(line)
                 if not match:

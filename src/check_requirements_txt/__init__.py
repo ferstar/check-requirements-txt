@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: MIT
 import argparse
 import concurrent.futures
+import fnmatch
 import importlib.metadata
 import locale
 import os
@@ -28,6 +29,127 @@ MODULE_FROM_P = re.compile(r"^\s*?from\s+(?P<module>[a-zA-Z0-9_]+).*?\simport")
 DROP_LINE_P = re.compile(r"^\w+:/+", re.I)
 
 project_modules = set()
+
+
+class GitignoreFilter:
+    """A simple gitignore-style pattern matcher."""
+
+    def __init__(self, gitignore_path: Path | None = None, *, respect_gitignore: bool = True):
+        """Initialize the GitignoreFilter.
+
+        Args:
+            gitignore_path: Path to .gitignore file. If None, will search for .gitignore
+                          in current working directory and parent directories.
+            respect_gitignore: Whether to respect .gitignore patterns.
+        """
+        self.respect_gitignore = respect_gitignore
+        self.patterns: list[tuple[str, bool, bool]] = []  # (pattern, is_negation, is_absolute)
+
+        if not respect_gitignore:
+            return
+
+        if gitignore_path is None:
+            gitignore_path = self._find_gitignore()
+
+        if gitignore_path and gitignore_path.exists():
+            self._load_patterns(gitignore_path)
+
+    def _find_gitignore(self) -> Path | None:
+        """Find .gitignore file in current directory or parent directories."""
+        current = Path.cwd()
+        while current.parent != current:  # Stop at filesystem root
+            gitignore = current / ".gitignore"
+            if gitignore.exists():
+                return gitignore
+            current = current.parent
+        return None
+
+    def _load_patterns(self, gitignore_path: Path) -> None:
+        """Load patterns from .gitignore file."""
+        try:
+            with open(gitignore_path, encoding="utf-8") as f:
+                for raw_line in f:
+                    line = raw_line.strip()
+                    if not line or line.startswith("#"):
+                        continue
+
+                    is_negation = line.startswith("!")
+                    if is_negation:
+                        line = line[1:]
+
+                    # Store the pattern with a flag indicating if it's absolute
+                    is_absolute = line.startswith("/")
+                    if is_absolute:
+                        line = line[1:]  # Remove leading slash
+
+                    # Handle directory patterns (ending with /)
+                    if line.endswith("/"):
+                        line = line[:-1]
+
+                    # Store pattern with absolute flag
+                    self.patterns.append((line, is_negation, is_absolute))
+        except (OSError, UnicodeDecodeError):
+            # Ignore errors reading .gitignore file
+            pass
+
+    def should_ignore(self, path: Path, base_path: Path | None = None) -> bool:
+        """Check if a path should be ignored based on gitignore patterns.
+
+        Args:
+            path: The path to check
+            base_path: Base path for relative pattern matching. If None, uses cwd.
+
+        Returns:
+            True if the path should be ignored, False otherwise.
+        """
+        if not self.respect_gitignore:
+            return False
+
+        if base_path is None:
+            base_path = Path.cwd()
+
+        try:
+            # Get relative path for pattern matching
+            if path.is_absolute():
+                rel_path = path.relative_to(base_path)
+            else:
+                rel_path = path
+        except ValueError:
+            # Path is not relative to base_path
+            return False
+
+        rel_path_str = str(rel_path).replace("\\", "/")  # Normalize path separators
+
+        ignored = False
+        for pattern, is_negation, is_absolute in self.patterns:
+            matches = False
+
+            if is_absolute:
+                # Absolute pattern - only match at root level
+                # For absolute patterns, the path should match exactly at the root
+                matches = (
+                    rel_path_str == pattern  # Exact match
+                    or (rel_path.name == pattern and len(rel_path.parts) == 1)  # Root level file
+                )
+            # Relative pattern - can match at any level
+            elif "/" in pattern:
+                # Pattern with path separators
+                matches = fnmatch.fnmatch(rel_path_str, f"*/{pattern}")
+            else:
+                # Simple filename/dirname pattern
+                # Check if any part of the path matches the pattern
+                matches = (
+                    fnmatch.fnmatch(rel_path_str, f"*/{pattern}")  # File/dir match
+                    or fnmatch.fnmatch(rel_path.name, pattern)  # Final component match
+                    or any(fnmatch.fnmatch(part, pattern) for part in rel_path.parts)  # Any path component
+                    or fnmatch.fnmatch(rel_path_str, f"{pattern}/*")  # Inside directory
+                    or rel_path_str.startswith(f"{pattern}/")  # Direct subdirectory
+                )
+
+            if matches:
+                ignored = not is_negation
+
+        return ignored
 
 
 def supports_color() -> bool:
@@ -374,15 +496,24 @@ def load_package_dependencies(req_path: Path | str) -> dict[str, set[str]]:
     return dependencies
 
 
-def get_imports_parallel(paths: Generator[Path, None, None] | list[Path], max_workers: int = 4) -> dict[str, set[str]]:
+def get_imports_parallel(
+    paths: Generator[Path, None, None] | list[Path],
+    max_workers: int = 4,
+    gitignore_filter: GitignoreFilter | None = None,
+) -> dict[str, set[str]]:
     """Get imports using parallel processing for better performance with many files."""
     modules: dict[str, set[str]] = defaultdict(set)
 
     def process_single_path(p: Path) -> dict[str, set[str]]:
         """Process a single path and return its imports."""
         path_modules: dict[str, set[str]] = defaultdict(set)
+        base_path = p if p.is_dir() else p.parent
 
         def process_path_recursively(p: Path):
+            # Check if path should be ignored by gitignore
+            if gitignore_filter and gitignore_filter.should_ignore(p, base_path):
+                return
+
             if p.is_file() and p.suffix.lower() == ".py":
                 try:
                     with open(p) as file_obj:
@@ -430,15 +561,20 @@ def get_imports(
     *,
     use_parallel: bool = False,
     max_workers: int = 4,
+    gitignore_filter: GitignoreFilter | None = None,
 ) -> dict[str, set[str]]:
     """Get imports from Python files."""
     if use_parallel:
-        return get_imports_parallel(paths, max_workers)
+        return get_imports_parallel(paths, max_workers, gitignore_filter)
     else:
         # Original sequential implementation
         modules: dict[str, set[str]] = defaultdict(set)
 
-        def process_path(p: Path):
+        def process_path(p: Path, base_path: Path):
+            # Check if path should be ignored by gitignore
+            if gitignore_filter and gitignore_filter.should_ignore(p, base_path):
+                return
+
             if p.is_file() and p.suffix.lower() == ".py":
                 with open(p) as file_obj:
                     for idx, line in enumerate(file_obj, 1):
@@ -450,10 +586,11 @@ def get_imports(
                             modules[module].add(f"{p}:{idx}")
             elif p.is_dir() and not p.name.startswith("."):
                 for item in p.iterdir():
-                    process_path(item)
+                    process_path(item, base_path)
 
         for path in paths:
-            process_path(path)
+            base_path = path if path.is_dir() else path.parent
+            process_path(path, base_path)
         return modules
 
 
@@ -496,6 +633,22 @@ def run(argv: Sequence[str] | None = None) -> int:
         default=4,
         help="maximum number of worker threads for parallel processing (default: 4)",
     )
+    parser.add_argument(
+        "--respect-gitignore",
+        action="store_true",
+        default=True,
+        help="respect .gitignore patterns when scanning files (default: True)",
+    )
+    parser.add_argument(
+        "--no-gitignore",
+        action="store_true",
+        help="ignore .gitignore patterns and scan all files",
+    )
+    parser.add_argument(
+        "--gitignore-path",
+        type=Path,
+        help="path to custom .gitignore file (default: auto-detect)",
+    )
     args = parser.parse_args(argv)
 
     # Validate max_workers parameter
@@ -503,6 +656,13 @@ def run(argv: Sequence[str] | None = None) -> int:
         parser.error("--max-workers must be at least 1")
     if args.max_workers > MAX_WORKERS_LIMIT:
         parser.error(f"--max-workers should not exceed {MAX_WORKERS_LIMIT}")
+
+    # Create gitignore filter
+    respect_gitignore = args.respect_gitignore and not args.no_gitignore
+    gitignore_filter = GitignoreFilter(
+        gitignore_path=args.gitignore_path,
+        respect_gitignore=respect_gitignore,
+    )
 
     if not argv and not any([args.filenames, args.dst_dir, args.req_paths]):
         parser.print_help()
@@ -524,6 +684,9 @@ def run(argv: Sequence[str] | None = None) -> int:
     for project in project_dirs:
         for py_path in project.glob("**/*.py"):
             if py_path.name.startswith("."):
+                continue
+            # Check if path should be ignored by gitignore
+            if gitignore_filter.should_ignore(py_path, project):
                 continue
 
             relative_path = py_path.relative_to(project)
@@ -595,7 +758,12 @@ def run(argv: Sequence[str] | None = None) -> int:
     error_count = 0
     args.ignore.add("pip")
     args.ignore = {v.lower() for v in args.ignore}
-    used_modules = get_imports(path_list, use_parallel=args.parallel, max_workers=args.max_workers)
+    used_modules = get_imports(
+        path_list,
+        use_parallel=args.parallel,
+        max_workers=args.max_workers,
+        gitignore_filter=gitignore_filter,
+    )
     builtin_modules = {name.replace("-", "_"): items for name, items in builtin_modules.items()}
     used_modules = {name.replace("-", "_"): items for name, items in used_modules.items()}
 

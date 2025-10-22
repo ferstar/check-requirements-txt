@@ -8,11 +8,12 @@ import os
 import sys
 from pathlib import Path
 from types import ModuleType
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 import pytest
 
 from check_requirements_txt import (
+    GitignoreFilter,
     colorize,
     find_depends,
     find_real_modules,
@@ -1793,7 +1794,9 @@ class TestParallelFlag:
 
         # Verify get_imports was called with parallel=True and absolute path
         expected_path = project_dir.absolute()
-        mock_get_imports.assert_called_once_with([expected_path], use_parallel=True, max_workers=4)
+        mock_get_imports.assert_called_once_with(
+            [expected_path], use_parallel=True, max_workers=4, gitignore_filter=ANY
+        )
 
     @patch("check_requirements_txt.stdlibs")
     @patch("check_requirements_txt.load_req_modules")
@@ -1822,7 +1825,9 @@ class TestParallelFlag:
 
         # Verify get_imports was called with custom worker count and absolute path
         expected_path = project_dir.absolute()
-        mock_get_imports.assert_called_once_with([expected_path], use_parallel=True, max_workers=8)
+        mock_get_imports.assert_called_once_with(
+            [expected_path], use_parallel=True, max_workers=8, gitignore_filter=ANY
+        )
 
     @patch("check_requirements_txt.stdlibs")
     @patch("check_requirements_txt.load_req_modules")
@@ -1849,4 +1854,153 @@ class TestParallelFlag:
 
         # Verify get_imports was called with parallel=False (default) and absolute path
         expected_path = project_dir.absolute()
-        mock_get_imports.assert_called_once_with([expected_path], use_parallel=False, max_workers=4)
+        mock_get_imports.assert_called_once_with(
+            [expected_path], use_parallel=False, max_workers=4, gitignore_filter=ANY
+        )
+
+
+class TestGitignoreFilter:
+    """Test GitignoreFilter functionality."""
+
+    def test_gitignore_filter_disabled(self):
+        """Test that GitignoreFilter respects disabled state."""
+        filter_obj = GitignoreFilter(respect_gitignore=False)
+        test_path = Path("test/file.py")
+        assert not filter_obj.should_ignore(test_path)
+
+    def test_gitignore_filter_no_file(self):
+        """Test GitignoreFilter when no .gitignore file exists."""
+        with patch.object(GitignoreFilter, "_find_gitignore", return_value=None):
+            filter_obj = GitignoreFilter(respect_gitignore=True)
+            test_path = Path("test/file.py")
+            assert not filter_obj.should_ignore(test_path)
+
+    def test_gitignore_pattern_matching(self, tmp_path):
+        """Test basic gitignore pattern matching."""
+        gitignore_file = tmp_path / ".gitignore"
+        gitignore_file.write_text("*.pyc\n__pycache__/\nbuild/\n.venv\n")
+
+        filter_obj = GitignoreFilter(gitignore_path=gitignore_file)
+
+        # Test file patterns
+        assert filter_obj.should_ignore(Path("test.pyc"), tmp_path)
+        assert not filter_obj.should_ignore(Path("test.py"), tmp_path)
+
+        # Test directory patterns
+        assert filter_obj.should_ignore(Path("__pycache__"), tmp_path)
+        assert filter_obj.should_ignore(Path("src/__pycache__"), tmp_path)
+        assert filter_obj.should_ignore(Path("build"), tmp_path)
+        assert filter_obj.should_ignore(Path(".venv"), tmp_path)
+
+        # Test nested paths
+        assert filter_obj.should_ignore(Path("src/__pycache__/test.pyc"), tmp_path)
+        assert not filter_obj.should_ignore(Path("src/main.py"), tmp_path)
+
+    def test_gitignore_comments_and_blank_lines(self, tmp_path):
+        """Test that comments and blank lines in .gitignore are ignored."""
+        gitignore_file = tmp_path / ".gitignore"
+        gitignore_file.write_text("# This is a comment\n\n*.pyc\n# Another comment\n\nbuild/\n")
+
+        filter_obj = GitignoreFilter(gitignore_path=gitignore_file)
+
+        assert filter_obj.should_ignore(Path("test.pyc"), tmp_path)
+        assert filter_obj.should_ignore(Path("build"), tmp_path)
+        assert not filter_obj.should_ignore(Path("test.py"), tmp_path)
+
+    def test_gitignore_negation_patterns(self, tmp_path):
+        """Test gitignore negation patterns with !."""
+        gitignore_file = tmp_path / ".gitignore"
+        gitignore_file.write_text("*.log\n!important.log\n")
+
+        filter_obj = GitignoreFilter(gitignore_path=gitignore_file)
+
+        assert filter_obj.should_ignore(Path("debug.log"), tmp_path)
+        assert filter_obj.should_ignore(Path("error.log"), tmp_path)
+        assert not filter_obj.should_ignore(Path("important.log"), tmp_path)
+
+    def test_gitignore_auto_discovery(self, tmp_path):
+        """Test automatic .gitignore file discovery."""
+        # Create nested directory structure
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        sub_dir = project_dir / "src"
+        sub_dir.mkdir()
+
+        # Create .gitignore in project root
+        gitignore_file = project_dir / ".gitignore"
+        gitignore_file.write_text("*.pyc\n")
+
+        # Change to subdirectory and test auto-discovery
+        original_cwd = Path.cwd()
+        try:
+            os.chdir(sub_dir)
+            filter_obj = GitignoreFilter(respect_gitignore=True)
+            assert filter_obj.should_ignore(Path("test.pyc"))
+        finally:
+            os.chdir(original_cwd)
+
+    def test_gitignore_absolute_patterns(self, tmp_path):
+        """Test gitignore patterns starting with /."""
+        gitignore_file = tmp_path / ".gitignore"
+        gitignore_file.write_text("/build\n/dist/\n")
+
+        filter_obj = GitignoreFilter(gitignore_path=gitignore_file)
+
+        # Absolute patterns should only match at root level
+        assert filter_obj.should_ignore(Path("build"), tmp_path)
+        assert filter_obj.should_ignore(Path("dist"), tmp_path)
+        assert not filter_obj.should_ignore(Path("src/build"), tmp_path)
+        assert not filter_obj.should_ignore(Path("src/dist"), tmp_path)
+
+    def test_gitignore_encoding_error_handling(self, tmp_path):
+        """Test handling of encoding errors in .gitignore file."""
+        gitignore_file = tmp_path / ".gitignore"
+        gitignore_file.write_bytes(b"\xff\xfe*.pyc\n")  # Invalid UTF-8
+
+        # Should not raise an exception
+        filter_obj = GitignoreFilter(gitignore_path=gitignore_file)
+        # Should default to not ignoring anything if file can't be read
+        assert not filter_obj.should_ignore(Path("test.pyc"), tmp_path)
+
+    def test_gitignore_file_not_found(self, tmp_path):
+        """Test handling when specified .gitignore file doesn't exist."""
+        non_existent = tmp_path / "nonexistent.gitignore"
+        filter_obj = GitignoreFilter(gitignore_path=non_existent)
+
+        # Should not ignore anything if file doesn't exist
+        assert not filter_obj.should_ignore(Path("test.pyc"), tmp_path)
+
+    def test_get_imports_with_gitignore(self, tmp_path):
+        """Test that get_imports respects gitignore filter."""
+        # Create test structure
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+
+        # Create Python files
+        main_py = project_dir / "main.py"
+        main_py.write_text("import requests\nimport sys")
+
+        ignored_py = project_dir / "ignored.py"
+        ignored_py.write_text("import numpy")
+
+        # Create .gitignore
+        gitignore_file = project_dir / ".gitignore"
+        gitignore_file.write_text("ignored.py\n")
+
+        # Test with gitignore enabled
+        filter_obj = GitignoreFilter(gitignore_path=gitignore_file)
+        imports = get_imports([project_dir], gitignore_filter=filter_obj)
+
+        # Should find imports from main.py but not ignored.py
+        assert "requests" in imports
+        assert "sys" in imports
+        assert "numpy" not in imports
+
+        # Test with gitignore disabled
+        filter_disabled = GitignoreFilter(respect_gitignore=False)
+        imports_all = get_imports([project_dir], gitignore_filter=filter_disabled)
+
+        # Should find imports from both files
+        assert "requests" in imports_all
+        assert "sys" in imports_all
+        assert "numpy" in imports_all

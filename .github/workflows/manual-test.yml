@@ -47,7 +47,7 @@ jobs:
       fail-fast: false
 
     steps:
-    - uses: actions/checkout@v5
+    - uses: actions/checkout@v6
 
     - name: Set up Python ${{ matrix.python-version }}
       uses: actions/setup-python@v6
@@ -85,7 +85,7 @@ jobs:
     runs-on: ubuntu-latest
     if: ${{ github.event.inputs.run-build == 'true' }}
     steps:
-    - uses: actions/checkout@v5
+    - uses: actions/checkout@v6
 
     - name: Set up Python
       uses: actions/setup-python@v6
@@ -114,7 +114,7 @@ jobs:
         python-version: ${{ fromJSON(needs.setup.outputs.python-versions) }}
 
     steps:
-    - uses: actions/checkout@v5
+    - uses: actions/checkout@v6
 
     - name: Set up Python ${{ matrix.python-version }}
       uses: actions/setup-python@v6

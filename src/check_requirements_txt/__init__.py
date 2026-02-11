@@ -12,6 +12,7 @@ import sys
 import warnings
 from collections import defaultdict
 from collections.abc import Generator, Iterable, Sequence
+from functools import lru_cache
 from pathlib import Path
 
 if sys.version_info >= (3, 11):
@@ -194,16 +195,10 @@ def stdlibs() -> list[str]:
     return list(set(list(sys.stdlib_module_names) + list(sys.builtin_module_names)))
 
 
-def find_depends(package_name: str, extras: set[str] | None = None) -> list[str]:
-    """Find all dependencies for a package, optionally including extras.
+@lru_cache(maxsize=2048)
+def _find_depends_cached(package_name: str, extras_key: tuple[str, ...]) -> tuple[str, ...]:
+    extras = set(extras_key)
 
-    Args:
-        package_name: The name of the package
-        extras: Optional set of extras to include when resolving dependencies
-
-    Returns:
-        List of all required package names
-    """
     requires = set()
     to_process = {package_name}
     processed = set()
@@ -219,20 +214,16 @@ def find_depends(package_name: str, extras: set[str] | None = None) -> list[str]
         try:
             dist = importlib.metadata.distribution(current_package)
         except importlib.metadata.PackageNotFoundError:
-            # If the package itself is not found, add it to requirements.
-            # This could happen if a requirement is specified but not installed.
             requires.add(current_package)
             continue
 
-        requires.add(dist.metadata["Name"])  # Use normalized name
+        requires.add(dist.metadata["Name"])
 
         if dist.requires:
             for req_str in dist.requires:
                 req = Requirement(req_str)
-                # Skip requirements with markers that don't evaluate to True
                 if req.marker:
                     if extras:
-                        # For each extra, check if this requirement should be included
                         should_include = False
                         for extra in extras:
                             env_with_extra = {"extra": extra}
@@ -240,17 +231,30 @@ def find_depends(package_name: str, extras: set[str] | None = None) -> list[str]
                                 should_include = True
                                 break
                         if not should_include:
-                            # Also check if it evaluates to True without any extra
-                            if not req.marker.evaluate({}):  # pragma: no branch
+                            if not req.marker.evaluate({}):
                                 continue
-                    # No extras specified, evaluate with empty environment
-                    elif not req.marker.evaluate({}):  # pragma: no branch
+                    elif not req.marker.evaluate({}):
                         continue
                 to_process.add(req.name)
-    return list(requires)
+    return tuple(requires)
 
 
-def find_real_modules(package_name: str) -> list[str]:
+def find_depends(package_name: str, extras: set[str] | None = None) -> list[str]:
+    """Find all dependencies for a package, optionally including extras.
+
+    Args:
+        package_name: The name of the package
+        extras: Optional set of extras to include when resolving dependencies
+
+    Returns:
+        List of all required package names
+    """
+    extras_key = tuple(sorted(extra.lower().replace("_", "-") for extra in extras)) if extras else ()
+    return list(_find_depends_cached(package_name, extras_key))
+
+
+@lru_cache(maxsize=2048)
+def _find_real_modules_cached(package_name: str) -> tuple[str, ...]:
     modules = set()
     # Normalize package name for lookup
     normalized_package_name = package_name.replace("-", "_").lower()
@@ -260,7 +264,7 @@ def find_real_modules(package_name: str) -> list[str]:
     except importlib.metadata.PackageNotFoundError:
         # If package not found, assume the package name is the module name
         modules.add(normalized_package_name)
-        return list(modules)
+        return tuple(modules)
 
     # Try to find top_level.txt
     if dist.files:
@@ -274,7 +278,7 @@ def find_real_modules(package_name: str) -> list[str]:
                             modules.add(module_name)
                     # If top_level.txt is found and processed, we can often return early
                     if modules:  # pragma: no branch
-                        return list(modules)
+                        return tuple(modules)
 
     # If top_level.txt is not found or empty, infer from file paths
     if dist.files:
@@ -294,7 +298,11 @@ def find_real_modules(package_name: str) -> list[str]:
     # If no modules were found through file parsing, fall back to package name
     if not modules:
         modules.add(normalized_package_name)
-    return list(modules)
+    return tuple(modules)
+
+
+def find_real_modules(package_name: str) -> list[str]:
+    return list(_find_real_modules_cached(package_name))
 
 
 def parse_pyproject_toml(path: Path) -> Iterable[tuple[str, set[str]]]:
@@ -496,50 +504,136 @@ def load_package_dependencies(req_path: Path | str) -> dict[str, set[str]]:
     return dependencies
 
 
+def _is_relative_to(path: Path, parent: Path) -> bool:
+    try:
+        path.relative_to(parent)
+    except ValueError:
+        return False
+    return True
+
+
+def _module_name_for_file(py_path: Path, base_path: Path) -> str | None:
+    try:
+        relative_path = py_path.relative_to(base_path)
+    except ValueError:
+        return None
+
+    if any(part.startswith(".") for part in relative_path.parts):
+        return None
+
+    if py_path.name == "__init__.py":
+        if not relative_path.parent.parts:
+            return None
+        return ".".join(relative_path.parent.parts)
+    return ".".join(relative_path.with_suffix("").parts)
+
+
+def _collect_python_files_and_modules(
+    paths: list[Path],
+    *,
+    module_scan_roots: list[Path] | None = None,
+    gitignore_filter: GitignoreFilter | None = None,
+) -> tuple[list[Path], set[str]]:
+    import_dirs = [p for p in paths if p.is_dir()]
+    import_files = {p for p in paths if p.is_file() and p.suffix.lower() == ".py"}
+    scan_roots = module_scan_roots if module_scan_roots is not None else paths
+
+    python_files_to_scan: list[Path] = []
+    project_module_candidates: set[str] = set()
+    seen_files: set[Path] = set()
+
+    def should_scan_imports(py_path: Path) -> bool:
+        if py_path in import_files:
+            return True
+        return any(_is_relative_to(py_path, import_dir) for import_dir in import_dirs)
+
+    def process_py_file(py_path: Path, base_path: Path) -> None:
+        if py_path in seen_files:
+            return
+        seen_files.add(py_path)
+
+        module_name = _module_name_for_file(py_path, base_path)
+        if module_name:
+            project_module_candidates.add(module_name)
+
+        if should_scan_imports(py_path):
+            python_files_to_scan.append(py_path)
+
+    for root in scan_roots:
+        if not root.exists():
+            continue
+
+        base_path = root if root.is_dir() else root.parent
+        if root.is_file():
+            if root.suffix.lower() == ".py":
+                process_py_file(root, base_path)
+            continue
+
+        stack = [root]
+        while stack:
+            current = stack.pop()
+
+            if gitignore_filter and gitignore_filter.should_ignore(current, base_path):
+                continue
+
+            if current.is_dir():
+                if current.name.startswith("."):
+                    continue
+                for item in current.iterdir():
+                    stack.append(item)
+                continue
+
+            if current.is_file() and current.suffix.lower() == ".py":
+                process_py_file(current, base_path)
+
+    return python_files_to_scan, project_module_candidates
+
+
 def get_imports_parallel(
     paths: Generator[Path, None, None] | list[Path],
     max_workers: int = 4,
     gitignore_filter: GitignoreFilter | None = None,
+    project_module_names: set[str] | None = None,
+    *,
+    collect_project_modules: bool = False,
+    module_scan_roots: list[Path] | None = None,
 ) -> dict[str, set[str]]:
     """Get imports using parallel processing for better performance with many files."""
     modules: dict[str, set[str]] = defaultdict(set)
+    path_list = list(paths)
 
-    def process_single_path(p: Path) -> dict[str, set[str]]:
-        """Process a single path and return its imports."""
+    if project_module_names is None:
+        project_module_names = project_modules
+
+    python_files_to_scan, project_module_candidates = _collect_python_files_and_modules(
+        path_list,
+        module_scan_roots=module_scan_roots,
+        gitignore_filter=gitignore_filter,
+    )
+
+    if collect_project_modules:
+        project_module_names.clear()
+        project_module_names.update(project_module_candidates)
+        project_module_names.update(m for p in project_module_names.copy() for m in p.split("."))
+
+    def process_single_file(p: Path) -> dict[str, set[str]]:
+        """Process a single file and return its imports."""
         path_modules: dict[str, set[str]] = defaultdict(set)
-        base_path = p if p.is_dir() else p.parent
-
-        def process_path_recursively(p: Path):
-            # Check if path should be ignored by gitignore
-            if gitignore_filter and gitignore_filter.should_ignore(p, base_path):
-                return
-
-            if p.is_file() and p.suffix.lower() == ".py":
-                try:
-                    with open(p) as file_obj:
-                        for idx, line in enumerate(file_obj, 1):
-                            match = MODULE_IMPORT_P.search(line) or MODULE_FROM_P.search(line)
-                            if not match:
-                                continue
-                            module = match.group("module").lower()
-                            if module not in project_modules:
-                                path_modules[module].add(f"{p}:{idx}")
-                except (UnicodeDecodeError, OSError) as e:
-                    # Skip files that can't be read, but log the error if verbose
-                    warnings.warn(f"Failed to read {p}: {e}", stacklevel=2)
-            elif p.is_dir() and not p.name.startswith("."):
-                for item in p.iterdir():
-                    process_path_recursively(item)
-
-        process_path_recursively(p)
+        try:
+            with open(p) as file_obj:
+                for idx, line in enumerate(file_obj, 1):
+                    match = MODULE_IMPORT_P.search(line) or MODULE_FROM_P.search(line)
+                    if not match:
+                        continue
+                    module = match.group("module").lower()
+                    path_modules[module].add(f"{p}:{idx}")
+        except (UnicodeDecodeError, OSError) as e:
+            warnings.warn(f"Failed to read {p}: {e}", stacklevel=2)
         return path_modules
-
-    # Collect all paths to process
-    all_paths = list(paths)
 
     # Use ThreadPoolExecutor for I/O bound tasks
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-        future_to_path = {executor.submit(process_single_path, path): path for path in all_paths}
+        future_to_path = {executor.submit(process_single_file, path): path for path in python_files_to_scan}
 
         for future in concurrent.futures.as_completed(future_to_path):
             try:
@@ -553,7 +647,7 @@ def get_imports_parallel(
                 path = future_to_path[future]
                 warnings.warn(f"Failed to process {path}: {e}", stacklevel=2)
 
-    return modules
+    return {module: locations for module, locations in modules.items() if module not in project_module_names}
 
 
 def get_imports(
@@ -562,40 +656,55 @@ def get_imports(
     use_parallel: bool = False,
     max_workers: int = 4,
     gitignore_filter: GitignoreFilter | None = None,
+    project_module_names: set[str] | None = None,
+    collect_project_modules: bool = False,
+    module_scan_roots: list[Path] | None = None,
 ) -> dict[str, set[str]]:
     """Get imports from Python files."""
+    path_list = list(paths)
+
+    if project_module_names is None:
+        project_module_names = project_modules
+
     if use_parallel:
-        return get_imports_parallel(paths, max_workers, gitignore_filter)
+        return get_imports_parallel(
+            path_list,
+            max_workers,
+            gitignore_filter,
+            project_module_names,
+            collect_project_modules=collect_project_modules,
+            module_scan_roots=module_scan_roots,
+        )
     else:
-        # Original sequential implementation
+        python_files_to_scan, project_module_candidates = _collect_python_files_and_modules(
+            path_list,
+            module_scan_roots=module_scan_roots,
+            gitignore_filter=gitignore_filter,
+        )
+
+        if collect_project_modules:
+            project_module_names.clear()
+            project_module_names.update(project_module_candidates)
+            project_module_names.update(m for p in project_module_names.copy() for m in p.split("."))
+
         modules: dict[str, set[str]] = defaultdict(set)
-
-        def process_path(p: Path, base_path: Path):
-            # Check if path should be ignored by gitignore
-            if gitignore_filter and gitignore_filter.should_ignore(p, base_path):
-                return
-
-            if p.is_file() and p.suffix.lower() == ".py":
-                with open(p) as file_obj:
+        for py_path in python_files_to_scan:
+            try:
+                with open(py_path) as file_obj:
                     for idx, line in enumerate(file_obj, 1):
                         match = MODULE_IMPORT_P.search(line) or MODULE_FROM_P.search(line)
                         if not match:
                             continue
                         module = match.group("module").lower()
-                        if module not in project_modules:
-                            modules[module].add(f"{p}:{idx}")
-            elif p.is_dir() and not p.name.startswith("."):
-                for item in p.iterdir():
-                    process_path(item, base_path)
+                        modules[module].add(f"{py_path}:{idx}")
+            except (UnicodeDecodeError, OSError) as e:
+                warnings.warn(f"Failed to read {py_path}: {e}", stacklevel=2)
 
-        for path in paths:
-            base_path = path if path.is_dir() else path.parent
-            process_path(path, base_path)
-        return modules
+        return {module: locations for module, locations in modules.items() if module not in project_module_names}
 
 
 def param_as_set(value: str) -> set[str]:
-    return {v.strip() for v in value.split(",") if v}
+    return {v.strip() for v in value.split(",") if v.strip()}
 
 
 def run(argv: Sequence[str] | None = None) -> int:
@@ -672,40 +781,21 @@ def run(argv: Sequence[str] | None = None) -> int:
     builtin_modules.update(
         {i: set() for i in stdlibs()},
     )
-    path_list = [Path(p).absolute() for p in args.filenames if p.lower().endswith(".py")]
+    path_list = []
+    for raw_path in args.filenames:
+        path = Path(raw_path).absolute()
+        if path.is_dir() or path.suffix.lower() == ".py":
+            path_list.append(path)
+
     if args.dst_dir:
         path_list.append(Path(args.dst_dir).absolute())
+
+    if not path_list:
+        path_list.append(Path.cwd())
 
     project_dirs = [p for p in path_list if p.is_dir() and not any(p.name.startswith(".") for p in p.parents)]
     if not project_dirs:
         project_dirs.append(Path().cwd())
-
-    project_module_candidates: set[str] = set()
-    for project in project_dirs:
-        for py_path in project.glob("**/*.py"):
-            if py_path.name.startswith("."):
-                continue
-            # Check if path should be ignored by gitignore
-            if gitignore_filter.should_ignore(py_path, project):
-                continue
-
-            relative_path = py_path.relative_to(project)
-            if any(part.startswith(".") for part in relative_path.parts):
-                continue
-
-            if py_path.name == "__init__.py":
-                # Include package directories that only expose an __init__.py
-                if not relative_path.parent.parts:
-                    continue
-                module_name = ".".join(relative_path.parent.parts)
-            else:
-                module_name = ".".join(relative_path.with_suffix("").parts)
-
-            if module_name:  # pragma: no branch
-                project_module_candidates.add(module_name)
-
-    project_modules.update(project_module_candidates)
-    project_modules.update(m for p in project_modules.copy() for m in p.split("."))
 
     if not args.req_paths:
         for project in project_dirs:
@@ -763,6 +853,9 @@ def run(argv: Sequence[str] | None = None) -> int:
         use_parallel=args.parallel,
         max_workers=args.max_workers,
         gitignore_filter=gitignore_filter,
+        project_module_names=project_modules,
+        collect_project_modules=True,
+        module_scan_roots=project_dirs,
     )
     builtin_modules = {name.replace("-", "_"): items for name, items in builtin_modules.items()}
     used_modules = {name.replace("-", "_"): items for name, items in used_modules.items()}

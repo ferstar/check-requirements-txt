@@ -75,6 +75,8 @@ check-requirements-txt --unused src/
 check-requirements-txt --parallel --max-workers 8 src/
 ```
 
+> 提示：目录既可以通过位置参数传入（如 `check-requirements-txt src/`），也可以使用 `--dst_dir src/`，两者行为一致。
+
 ### Supported File Formats
 
 **pyproject.toml** (recommended for modern Python projects):

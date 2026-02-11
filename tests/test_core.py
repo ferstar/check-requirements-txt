@@ -1007,6 +1007,46 @@ dependencies = ["some_other_package"]
         finally:
             os.chdir(original_cwd)
 
+    def test_run_directory_positional_argument_scans_python_files(self, tmp_path, capsys):
+        """Passing a directory as positional arg should scan that directory."""
+        project_modules.clear()
+        try:
+            project_dir = tmp_path / "project"
+            project_dir.mkdir()
+            (project_dir / "main.py").write_text("import definitely_missing_package\n")
+            req_file = project_dir / "requirements.txt"
+            req_file.write_text("requests\n")
+
+            return_code = run([str(project_dir), "--req-txt-path", str(req_file)])
+            assert return_code == 1
+
+            captured = capsys.readouterr()
+            assert 'Bad import detected: "definitely_missing_package"' in captured.out
+        finally:
+            project_modules.clear()
+
+    def test_run_clears_project_modules_between_invocations(self, tmp_path):
+        """Global project module cache should not leak across run() calls."""
+        project_modules.clear()
+        try:
+            first_project = tmp_path / "first"
+            first_project.mkdir()
+            (first_project / "foo.py").write_text("value = 1\n")
+            (first_project / "requirements.txt").write_text("requests\n")
+
+            second_project = tmp_path / "second"
+            second_project.mkdir()
+            (second_project / "main.py").write_text("import foo\n")
+            (second_project / "requirements.txt").write_text("requests\n")
+
+            first_result = run(["-d", str(first_project), "-r", str(first_project / "requirements.txt")])
+            assert first_result == 0
+
+            second_result = run(["-d", str(second_project), "-r", str(second_project / "requirements.txt")])
+            assert second_result == 1
+        finally:
+            project_modules.clear()
+
     @patch("check_requirements_txt.stdlibs")
     @patch("check_requirements_txt.load_req_modules")
     @patch("check_requirements_txt.get_imports")
@@ -1795,7 +1835,13 @@ class TestParallelFlag:
         # Verify get_imports was called with parallel=True and absolute path
         expected_path = project_dir.absolute()
         mock_get_imports.assert_called_once_with(
-            [expected_path], use_parallel=True, max_workers=4, gitignore_filter=ANY
+            [expected_path],
+            use_parallel=True,
+            max_workers=4,
+            gitignore_filter=ANY,
+            project_module_names=ANY,
+            collect_project_modules=True,
+            module_scan_roots=[expected_path],
         )
 
     @patch("check_requirements_txt.stdlibs")
@@ -1826,7 +1872,13 @@ class TestParallelFlag:
         # Verify get_imports was called with custom worker count and absolute path
         expected_path = project_dir.absolute()
         mock_get_imports.assert_called_once_with(
-            [expected_path], use_parallel=True, max_workers=8, gitignore_filter=ANY
+            [expected_path],
+            use_parallel=True,
+            max_workers=8,
+            gitignore_filter=ANY,
+            project_module_names=ANY,
+            collect_project_modules=True,
+            module_scan_roots=[expected_path],
         )
 
     @patch("check_requirements_txt.stdlibs")
@@ -1855,7 +1907,13 @@ class TestParallelFlag:
         # Verify get_imports was called with parallel=False (default) and absolute path
         expected_path = project_dir.absolute()
         mock_get_imports.assert_called_once_with(
-            [expected_path], use_parallel=False, max_workers=4, gitignore_filter=ANY
+            [expected_path],
+            use_parallel=False,
+            max_workers=4,
+            gitignore_filter=ANY,
+            project_module_names=ANY,
+            collect_project_modules=True,
+            module_scan_roots=[expected_path],
         )
 
 
